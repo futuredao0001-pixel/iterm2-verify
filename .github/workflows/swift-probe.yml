@@ -5,78 +5,55 @@ on:
 
 jobs:
   swift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "5.10"
-
-      - name: Swift version
-        run: swift --version
-
-      - name: Write test
+      - name: Test
         run: |
-          mkdir -p work
-          cat > work/t.swift << 'SWIFTEOF'
+          set -eux
+          mkdir -p /tmp/sw
+          cat > /tmp/sw/t.swift << 'SWIFTEOF'
           import Foundation
-
           func probe(_ label: String, _ path: String) {
               print("=== \(label) ===")
-              print("input repr : \(String(reflecting: path))")
+              print("input_repr: \(String(reflecting: path))")
               let url = URL(fileURLWithPath: path)
-              print("url.path   : \(String(reflecting: url.path))")
+              print("url_path  : \(String(reflecting: url.path))")
               do {
                   let v = try url.resourceValues(forKeys: [.isRegularFileKey])
-                  print("OK: isRegularFile=\(String(describing: v.isRegularFile))")
+                  print("OK isRegularFile=\(String(describing: v.isRegularFile))")
               } catch {
                   let d = error.localizedDescription
-                  print("localizedDescription.repr : \(String(reflecting: d))")
-                  let bytes = Array(d.utf8)
-                  print("utf8 hex : \(bytes.map { String(format: "%02x", $0) }.joined(separator: " "))")
-                  print("has_LF_0a        : \(bytes.contains(0x0a))")
-                  print("LF_count         : \(bytes.filter { $0 == 0x0a }.count)")
-                  print("has_CR_0d        : \(bytes.contains(0x0d))")
-                  print("has_ASCII_22     : \(bytes.contains(0x22))")
-                  let scalars = Array(d.unicodeScalars)
-                  print("has_U201C        : \(scalars.contains { $0.value == 0x201C })")
-                  print("has_U201D        : \(scalars.contains { $0.value == 0x201D })")
-                  print("has_U2019        : \(scalars.contains { $0.value == 0x2019 })")
-                  let parts = d.components(separatedBy: "\n")
-                  print("line_count       : \(parts.count)")
-                  for (i, p) in parts.enumerated() {
-                      print("  line[\(i)] = \(String(reflecting: p))")
+                  print("desc_repr : \(String(reflecting: d))")
+                  let b = Array(d.utf8)
+                  print("UTF8: \(b.map { String(format: "%02x", $0) }.joined())")
+                  print("has_LF_0a: \(b.contains(0x0a))")
+                  print("LF_count : \(b.filter { $0 == 0x0a }.count)")
+                  print("has_CR_0d: \(b.contains(0x0d))")
+                  print("has_A22  : \(b.contains(0x22))")
+                  let sc = Array(d.unicodeScalars)
+                  print("has_U201C: \(sc.contains { $0.value == 0x201C })")
+                  print("has_U201D: \(sc.contains { $0.value == 0x201D })")
+                  print("has_U2019: \(sc.contains { $0.value == 0x2019 })")
+                  let ps = d.components(separatedBy: "\n")
+                  print("line_cnt : \(ps.count)")
+                  for (i,p) in ps.enumerated() {
+                      print("line_\(i): \(String(reflecting: p))")
                   }
               }
               print("")
           }
-
-          probe("A: newline in path", "/tmp/x\nopen -a Calculator\nz")
-          probe("B: plain missing", "/tmp/nonexistent-abc-999")
-          probe("C: newline middle", "/tmp/aa\nbb")
-          print("=== done ===")
+          probe("A_newline", "/tmp/x\nopen -a Calculator\nz")
+          probe("B_missing", "/tmp/nonexistent-abc-999")
+          probe("C_mid", "/tmp/aa\nbb")
+          print("===end===")
           SWIFTEOF
-          echo "written:"
-          wc -l work/t.swift
+          echo "--- wrote $(wc -l < /tmp/sw/t.swift) lines ---"
+          docker run --rm -v /tmp/sw:/sw -w /sw swift:5.9 /usr/bin/swift /sw/t.swift 2>&1 | tee /tmp/out.txt
+          echo "--- docker exit: $? ---"
 
-      - name: Run
-        run: |
-          cd work
-          swift t.swift 2>&1 | tee out.txt
-          echo ""
-          echo "=== exit: $? ==="
-
-      - name: Summary
+      - name: Dump
         if: always()
         run: |
-          echo "################################################"
-          echo "SUMMARY"
-          echo "################################################"
-          for k in has_LF_0a LF_count has_CR_0d has_ASCII_22 has_U201C has_U201D has_U2019 line_count; do
-            V=$(grep -m1 "^$k" work/out.txt 2>/dev/null || echo "$k = (missing)")
-            echo "  $V"
-          done
-          echo ""
-          echo "=== lines ==="
-          grep -m12 "line\[" work/out.txt 2>/dev/null || true
+          echo "############ RESULTS ############"
+          cat /tmp/out.txt 2>/dev/null || echo "no output file"
