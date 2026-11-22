@@ -1,0 +1,17 @@
+name: macos-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-14
+    timeout-minutes: 8
+    steps:
+      - name: hello
+        run: |
+          echo "=== macos probe ==="
+          sw_vers
+          uname -a
+          echo "windowserver:"
+          pgrep -l WindowServer || echo "none"
+          echo "console user:"
+          stat -f%Su /dev/console
