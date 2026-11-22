@@ -1,0 +1,83 @@
+name: swift-foundation-probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  swift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check docker
+        run: docker --version
+
+      - name: Write swift test
+        run: |
+          mkdir -p /tmp/sw
+          cat > /tmp/sw/t.swift << 'SWIFTEOF'
+          import Foundation
+
+          func probe(_ label: String, _ path: String) {
+              print("=== \(label) ===")
+              print("path repr: \(String(reflecting: path))")
+              let url = URL(fileURLWithPath: path)
+              do {
+                  let v = try url.resourceValues(forKeys: [.isRegularFileKey])
+                  print("resourceValues OK: isRegularFile=\(String(describing: v.isRegularFile))")
+                  let data = try Data(contentsOf: url)
+                  print("Data OK: \(data.count) bytes")
+              } catch {
+                  let d = error.localizedDescription
+                  print("localizedDescription:")
+                  print("  plain: \(d)")
+                  print("  repr : \(String(reflecting: d))")
+                  print("  utf8 : \(Array(d.utf8).map { String(format: "%02x", $0) }.joined(separator: " "))")
+                  print("  has LF (0x0a)        : \(d.utf8.contains(0x0a))")
+                  print("  has CR (0x0d)        : \(d.utf8.contains(0x0d))")
+                  print("  LF count             : \(d.utf8.filter { $0 == 0x0a }.count)")
+                  let hasCurly = d.unicodeScalars.contains { $0.value == 0x201C || $0.value == 0x201D }
+                  let hasApos  = d.unicodeScalars.contains { $0.value == 0x2019 }
+                  print("  has curly quote U+201C/201D: \(hasCurly)")
+                  print("  has curly apos  U+2019     : \(hasApos)")
+                  print("  has ASCII dquote (0x22)    : \(d.utf8.contains(0x22))")
+                  print("  line count           : \(d.components(separatedBy: "\n").count)")
+                  print("  lines:")
+                  for (i, line) in d.components(separatedBy: "\n").enumerated() {
+                      print("    [\(i)] \(String(reflecting: line))")
+                  }
+              }
+              print("")
+          }
+
+          // 核心测试：路径里含换行
+          probe("path with newline", "/tmp/x\nopen -a Calculator\nz")
+          // 对照：普通不存在路径
+          probe("plain missing", "/tmp/definitely-not-exists-12345")
+          // 对照：路径里含换行但没有尾部分隔
+          probe("newline only in middle", "/tmp/aa\nbb")
+
+          print("=== Foundation version ===")
+          print(Bundle.allFrameworks.map { $0.bundlePath }.prefix(20).joined(separator: "\n"))
+          SWIFTEOF
+          echo "--- written ---"
+          wc -l /tmp/sw/t.swift
+
+      - name: Run in swift container
+        run: |
+          docker run --rm \
+            -v /tmp/sw:/sw \
+            -w /sw \
+            swift:5.9-slim \
+            swift t.swift 2>&1 | tee /tmp/out.txt
+
+      - name: Extract key findings
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "KEY FINDINGS"
+          echo "=================================================="
+          if [ -f /tmp/out.txt ]; then
+            grep -q "LF count" /tmp/out.txt && echo "LF preservation: $(grep 'LF count' /tmp/out.txt | head -1)"
+            grep -q "curly quote" /tmp/out.txt && echo "Curly quotes:   $(grep 'curly quote' /tmp/out.txt | head -1)"
+            grep -q "lines:" /tmp/out.txt && grep -A6 "lines:" /tmp/out.txt | head -20
+          fi
