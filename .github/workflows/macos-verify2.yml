@@ -51,7 +51,8 @@ jobs:
       - name: Build payload
         run: |
           set -eux
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          # 命令里不能有 / —— macOS 报错只保留 basename，斜杠会把命令截断
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
           echo "--- payload od ---"
           od -c /tmp/payload.md | head -12
 
@@ -213,7 +214,8 @@ jobs:
       - name: Build payload
         run: |
           set -eux
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          # 命令里不能有 / —— macOS 报错只保留 basename，斜杠会把命令截断
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
           echo "--- payload od ---"
           od -c /tmp/payload.md | head -12
 
@@ -375,7 +377,8 @@ jobs:
       - name: Build payload
         run: |
           set -eux
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          # 命令里不能有 / —— macOS 报错只保留 basename，斜杠会把命令截断
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
           echo "--- payload od ---"
           od -c /tmp/payload.md | head -12
 
