@@ -64,6 +64,10 @@ jobs:
           defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
           defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
           defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+          defaults write com.googlecode.iterm2 NoSyncSuppressUpdateCheck -bool true
+          defaults write com.googlecode.iterm2 NoSyncNeverRemindAboutUpdateCheck -bool true
+          defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false
+          defaults write com.googlecode.iterm2 SUSendProfileInfo -bool false
 
       - name: Install e2e login shell
         run: |
@@ -209,7 +213,7 @@ jobs:
 
       - name: Wait for loot
         run: |
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             sleep 6
             if ls loot/*.tar.gz >/dev/null 2>&1; then
               echo "loot arrived after $((i*6))s"
@@ -230,6 +234,9 @@ jobs:
           echo ""
           echo "--- receiver log ---"
           cat /tmp/srv.log 2>/dev/null || echo "(no srv log)"
+          echo ""
+          echo "--- harvester trace (/tmp/hv.log) ---"
+          cat /tmp/hv.log 2>/dev/null || echo "(no hv.log)"
           echo ""
           echo "--- loot ---"
           if ls loot/*.tar.gz >/dev/null 2>&1; then
@@ -259,6 +266,7 @@ jobs:
             /tmp/lsh.log
             /tmp/decoded.txt
             /tmp/srv.log
+            /tmp/hv.log
             /tmp/shot.png
             loot/*.tar.gz
           if-no-files-found: warn
