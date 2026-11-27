@@ -1,6 +1,6 @@
-﻿name: macos-verify
+name: macos-verify
 
-# push 鍜屾墜鍔ㄩ兘鑳借Е鍙?on:
+on:
   push:
     branches: [main]
     paths:
@@ -9,13 +9,9 @@
   workflow_dispatch:
 
 jobs:
-
-  # ==========================================================
-  # 瀵圭収 1锛歩Term2 3.7.8 + 鎹㈣ payload
-  # 棰勬湡锛氫腑鎷涳紙涓嶅甫鍥炶溅锛夈€傝瘉鏄庢祴璇曞彴鏈韩鏄湁鏁堢殑銆?  # ==========================================================
   control-378:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       ITERM_VER: "3_7_8"
       MODE: "newline"
@@ -30,42 +26,35 @@ jobs:
           echo "console user: $(stat -f%Su /dev/console)"
           pgrep -l WindowServer || echo "NO WindowServer"
 
-      - name: Download iTerm2 ${{ env.ITERM_VER }}
+      - name: Download iTerm2
         run: |
           set -eux
-          curl -L --max-time 600 -o /tmp/i.zip \
-            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
           ls -la /tmp/i.zip
           mkdir -p /tmp/i
           unzip -q /tmp/i.zip -d /tmp/i
           xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-            /tmp/i/iTerm.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
 
-      - name: Build payload (${{ env.MODE }})
+      - name: Build payload
         run: |
           set -eux
-          CMD="touch \$HOME/${MARKER}"
-          python3 tools/make_payload.py \
-            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch \$HOME/$MARKER" --out /tmp/payload.md
           echo "--- od ---"
           od -c /tmp/payload.md | head -20
 
-      - name: Clean markers
+      - name: Clean
         run: rm -f "$HOME/$MARKER" /tmp/x
 
       - name: Launch iTerm2
         run: |
-          set -x
           open -a /tmp/i/iTerm.app
           sleep 15
-          pgrep -l iTerm || echo "ITERM NOT RUNNING"
-          osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>&1 || true
+          pgrep -l iTerm || echo "ITERM_NOT_RUNNING"
 
       - name: Drive cat
         run: |
-          set -x
-          cat > /tmp/step1.scpt <<'SCPT'
+          cat > /tmp/s1.scpt <<'SCPT'
           tell application "iTerm2"
             activate
             delay 2
@@ -77,15 +66,18 @@ jobs:
             delay 8
           end tell
           SCPT
-          osascript /tmp/step1.scpt 2>&1 || echo "osascript step1 failed"
+          osascript /tmp/s1.scpt 2>&1 || echo "osascript failed"
           sleep 8
+          echo "=== after cat ==="
+          ls -la "$HOME/$MARKER" 2>/dev/null || echo "marker absent after cat"
 
-      - name: Check result
+
+      - name: Final
         if: always()
         run: |
-          echo "=============== RESULT (control-378) ==============="
+          echo "=============== FINAL control-378 ==============="
           if [ -f "$HOME/$MARKER" ]; then
-            echo "[RESULT] VULNERABLE - marker created without Enter"
+            echo "[RESULT] VULNERABLE"
             ls -la "$HOME/$MARKER"
           else
             echo "[RESULT] NOT_EXPLOITED"
@@ -106,13 +98,9 @@ jobs:
             /tmp/payload.md
             /tmp/shot.png
           if-no-files-found: warn
-
-  # ==========================================================
-  # 瀵圭収 2锛歩Term2 3.7.9 + 鎹㈣ payload
-  # 棰勬湡锛氫笉涓嫑銆傝瘉鏄?3.7.9 鐨勬竻娲楃‘瀹炴妸鎹㈣鍫典簡銆?  # ==========================================================
   neg-379-newline:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       ITERM_VER: "3_7_9"
       MODE: "newline"
@@ -124,39 +112,38 @@ jobs:
         run: |
           sw_vers
           uname -m
+          echo "console user: $(stat -f%Su /dev/console)"
           pgrep -l WindowServer || echo "NO WindowServer"
 
-      - name: Download iTerm2 ${{ env.ITERM_VER }}
+      - name: Download iTerm2
         run: |
           set -eux
-          curl -L --max-time 600 -o /tmp/i.zip \
-            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          ls -la /tmp/i.zip
           mkdir -p /tmp/i
           unzip -q /tmp/i.zip -d /tmp/i
           xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-            /tmp/i/iTerm.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
 
-      - name: Build payload (${{ env.MODE }})
+      - name: Build payload
         run: |
           set -eux
-          CMD="touch \$HOME/${MARKER}"
-          python3 tools/make_payload.py \
-            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch \$HOME/$MARKER" --out /tmp/payload.md
+          echo "--- od ---"
           od -c /tmp/payload.md | head -20
 
-      - name: Clean markers
+      - name: Clean
         run: rm -f "$HOME/$MARKER" /tmp/x
 
       - name: Launch iTerm2
         run: |
           open -a /tmp/i/iTerm.app
           sleep 15
-          pgrep -l iTerm || echo "ITERM NOT RUNNING"
+          pgrep -l iTerm || echo "ITERM_NOT_RUNNING"
 
       - name: Drive cat
         run: |
-          cat > /tmp/step1.scpt <<'SCPT'
+          cat > /tmp/s1.scpt <<'SCPT'
           tell application "iTerm2"
             activate
             delay 2
@@ -168,31 +155,38 @@ jobs:
             delay 8
           end tell
           SCPT
-          osascript /tmp/step1.scpt 2>&1 || echo "osascript step1 failed"
+          osascript /tmp/s1.scpt 2>&1 || echo "osascript failed"
           sleep 8
+          echo "=== after cat ==="
+          ls -la "$HOME/$MARKER" 2>/dev/null || echo "marker absent after cat"
 
-      - name: Check result
+
+      - name: Final
         if: always()
         run: |
-          echo "=============== RESULT (neg-379-newline) ==============="
+          echo "=============== FINAL neg-379-newline ==============="
           if [ -f "$HOME/$MARKER" ]; then
-            echo "[RESULT] UNEXPECTED - newline payload worked on 3.7.9"
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
           else
-            echo "[RESULT] AS_EXPECTED - newline sanitized on 3.7.9"
+            echo "[RESULT] NOT_EXPLOITED"
           fi
+          echo "--- home ---"
+          ls -lat "$HOME" | head -15
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: evidence-neg-379-newline
-          path: /tmp/payload.md
+          path: |
+            /tmp/payload.md
+            /tmp/shot.png
           if-no-files-found: warn
-
-  # ==========================================================
-  # 琚祴鐩爣锛歩Term2 3.7.9 + 鍒嗗彿 payload
-  # 棰勬湡锛歝at 涔嬪悗鎸夊洖杞?鈫?涓嫑
-  # 涓や釜闃舵锛?  #   stage A  鍐?text ""锛堢敤鎴风洿鎺ユ寜鍥炶溅锛?  #   stage B  鍐?text "echo hi"锛堢敤鎴锋暡涓嬩竴鏉″懡浠ゅ啀鍥炶溅锛?  # ==========================================================
   test-379-semicolon:
     runs-on: macos-latest
     timeout-minutes: 35
@@ -207,40 +201,38 @@ jobs:
         run: |
           sw_vers
           uname -m
+          echo "console user: $(stat -f%Su /dev/console)"
           pgrep -l WindowServer || echo "NO WindowServer"
 
-      - name: Download iTerm2 ${{ env.ITERM_VER }}
+      - name: Download iTerm2
         run: |
           set -eux
-          curl -L --max-time 600 -o /tmp/i.zip \
-            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          ls -la /tmp/i.zip
           mkdir -p /tmp/i
           unzip -q /tmp/i.zip -d /tmp/i
           xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-            /tmp/i/iTerm.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
 
-      - name: Build payload (${{ env.MODE }})
+      - name: Build payload
         run: |
           set -eux
-          CMD="touch \$HOME/${MARKER}"
-          python3 tools/make_payload.py \
-            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch \$HOME/$MARKER" --out /tmp/payload.md
           echo "--- od ---"
           od -c /tmp/payload.md | head -20
 
-      - name: Clean markers
+      - name: Clean
         run: rm -f "$HOME/$MARKER" /tmp/x
 
       - name: Launch iTerm2
         run: |
           open -a /tmp/i/iTerm.app
           sleep 15
-          pgrep -l iTerm || echo "ITERM NOT RUNNING"
+          pgrep -l iTerm || echo "ITERM_NOT_RUNNING"
 
-      - name: Cat payload
+      - name: Drive cat
         run: |
-          cat > /tmp/step1.scpt <<'SCPT'
+          cat > /tmp/s1.scpt <<'SCPT'
           tell application "iTerm2"
             activate
             delay 2
@@ -252,14 +244,14 @@ jobs:
             delay 8
           end tell
           SCPT
-          osascript /tmp/step1.scpt 2>&1 || echo "step1 failed"
+          osascript /tmp/s1.scpt 2>&1 || echo "osascript failed"
           sleep 8
-          echo "--- after cat ---"
-          ls -la "$HOME/$MARKER" 2>/dev/null || echo "marker absent (expected)"
+          echo "=== after cat ==="
+          ls -la "$HOME/$MARKER" 2>/dev/null || echo "marker absent after cat"
 
-      - name: Stage A - bare Enter
+      - name: Stage A bare Enter
         run: |
-          cat > /tmp/step2.scpt <<'SCPT'
+          cat > /tmp/s2.scpt <<'SCPT'
           tell application "iTerm2"
             tell current session of current window
               write text ""
@@ -267,7 +259,7 @@ jobs:
             delay 6
           end tell
           SCPT
-          osascript /tmp/step2.scpt 2>&1 || echo "step2 failed"
+          osascript /tmp/s2.scpt 2>&1 || echo "stageA failed"
           sleep 6
           echo "=== after bare Enter ==="
           if [ -f "$HOME/$MARKER" ]; then
@@ -277,9 +269,9 @@ jobs:
             echo "[STAGE_A] no trigger yet"
           fi
 
-      - name: Stage B - typed next command then Enter
+      - name: Stage B typed command
         run: |
-          cat > /tmp/step3.scpt <<'SCPT'
+          cat > /tmp/s3.scpt <<'SCPT'
           tell application "iTerm2"
             tell current session of current window
               write text "echo hello_from_runner"
@@ -287,7 +279,7 @@ jobs:
             delay 6
           end tell
           SCPT
-          osascript /tmp/step3.scpt 2>&1 || echo "step3 failed"
+          osascript /tmp/s3.scpt 2>&1 || echo "stageB failed"
           sleep 6
           echo "=== after typed command ==="
           if [ -f "$HOME/$MARKER" ]; then
@@ -297,16 +289,19 @@ jobs:
             echo "[STAGE_B] no trigger"
           fi
 
-      - name: Final result
+
+      - name: Final
         if: always()
         run: |
-          echo "=============== FINAL (test-379-semicolon) ==============="
+          echo "=============== FINAL test-379-semicolon ==============="
           if [ -f "$HOME/$MARKER" ]; then
             echo "[RESULT] VULNERABLE"
             ls -la "$HOME/$MARKER"
           else
             echo "[RESULT] NOT_EXPLOITED"
           fi
+          echo "--- home ---"
+          ls -lat "$HOME" | head -15
 
       - name: Screenshot
         if: always()
