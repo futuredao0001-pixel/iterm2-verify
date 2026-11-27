@@ -1,0 +1,37 @@
+﻿name: diag
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diag.yml']
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo UBUNTU_OK && uname -a
+
+  macos-latest:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo MACOS_LATEST_OK && sw_vers && uname -m
+
+  macos-14:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - run: echo MACOS14_OK && sw_vers
+
+  macos-15:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - run: echo MACOS15_OK && sw_vers
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo WINDOWS_OK
