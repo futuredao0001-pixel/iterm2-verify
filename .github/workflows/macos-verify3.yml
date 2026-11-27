@@ -45,7 +45,8 @@ jobs:
         run: |
           set -eux
           echo "PWNED_INJ_378" > /tmp/marker_name
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          # 命令用绝对路径 —— 相对路径会建到 bash 的 CWD 里，不一定是 $HOME
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
           od -c /tmp/payload.md | head -8
 
       - name: Build TIOCSTI injector
@@ -166,6 +167,9 @@ jobs:
           else
             echo "[RESULT] NOT_EXPLOITED"
           fi
+          echo ""
+          echo "--- where did it land (in case CWD differed) ---"
+          sudo find / -maxdepth 4 -name "$MARKER" -not -path "*/Trash/*" 2>/dev/null | head -10 || echo "(not found anywhere)"
 
       - name: Screenshot
         if: always()
@@ -217,7 +221,8 @@ jobs:
         run: |
           set -eux
           echo "PWNED_INJ_379NL" > /tmp/marker_name
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          # 命令用绝对路径 —— 相对路径会建到 bash 的 CWD 里，不一定是 $HOME
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
           od -c /tmp/payload.md | head -8
 
       - name: Build TIOCSTI injector
@@ -338,6 +343,9 @@ jobs:
           else
             echo "[RESULT] NOT_EXPLOITED"
           fi
+          echo ""
+          echo "--- where did it land (in case CWD differed) ---"
+          sudo find / -maxdepth 4 -name "$MARKER" -not -path "*/Trash/*" 2>/dev/null | head -10 || echo "(not found anywhere)"
 
       - name: Screenshot
         if: always()
@@ -389,7 +397,8 @@ jobs:
         run: |
           set -eux
           echo "PWNED_INJ_379S" > /tmp/marker_name
-          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          # 命令用绝对路径 —— 相对路径会建到 bash 的 CWD 里，不一定是 $HOME
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
           od -c /tmp/payload.md | head -8
 
       - name: Build TIOCSTI injector
@@ -510,6 +519,9 @@ jobs:
           else
             echo "[RESULT] NOT_EXPLOITED"
           fi
+          echo ""
+          echo "--- where did it land (in case CWD differed) ---"
+          sudo find / -maxdepth 4 -name "$MARKER" -not -path "*/Trash/*" 2>/dev/null | head -10 || echo "(not found anywhere)"
 
       - name: Screenshot
         if: always()
