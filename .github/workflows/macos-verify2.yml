@@ -75,9 +75,16 @@ jobs:
           cat /tmp/payload.md
 
           log "--- cat done ---"
+          log "timeout available: $(command -v timeout || echo NO)"
 
+          # 从 PTY 输入抓响应字节
+          # macOS 没有 coreutils 的 timeout，改用后台 + kill
           sleep 2
-          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          cat > /tmp/captured.bin 2>/dev/null &
+          CATPID=$!
+          sleep 5
+          kill $CATPID 2>/dev/null
+          wait $CATPID 2>/dev/null
           BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
           log "captured $BYTES bytes"
           if [ "$BYTES" -gt 0 ]; then
@@ -229,9 +236,16 @@ jobs:
           cat /tmp/payload.md
 
           log "--- cat done ---"
+          log "timeout available: $(command -v timeout || echo NO)"
 
+          # 从 PTY 输入抓响应字节
+          # macOS 没有 coreutils 的 timeout，改用后台 + kill
           sleep 2
-          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          cat > /tmp/captured.bin 2>/dev/null &
+          CATPID=$!
+          sleep 5
+          kill $CATPID 2>/dev/null
+          wait $CATPID 2>/dev/null
           BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
           log "captured $BYTES bytes"
           if [ "$BYTES" -gt 0 ]; then
@@ -383,9 +397,16 @@ jobs:
           cat /tmp/payload.md
 
           log "--- cat done ---"
+          log "timeout available: $(command -v timeout || echo NO)"
 
+          # 从 PTY 输入抓响应字节
+          # macOS 没有 coreutils 的 timeout，改用后台 + kill
           sleep 2
-          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          cat > /tmp/captured.bin 2>/dev/null &
+          CATPID=$!
+          sleep 5
+          kill $CATPID 2>/dev/null
+          wait $CATPID 2>/dev/null
           BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
           log "captured $BYTES bytes"
           if [ "$BYTES" -gt 0 ]; then
