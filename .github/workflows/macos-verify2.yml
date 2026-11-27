@@ -1,0 +1,428 @@
+name: macos-verify2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify2.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  cap-378:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "PWNED_378"
+      RUNDIR: "/tmp/run-cap-378"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          pgrep -l WindowServer || echo NO_WINDOWSERVER
+
+      - name: Download iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload
+        run: |
+          set -eux
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload od ---"
+          od -c /tmp/payload.md | head -12
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+#!/bin/bash
+# 假登录 shell —— 由 iTerm2 启动时自动执行
+exec >>/tmp/lsh.log 2>&1
+echo "=== login shell started $(date) ==="
+echo "TTY: $(tty)"
+echo "TERM: $TERM"
+echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+
+# 等 iTerm2 把终端准备好
+sleep 3
+echo "--- catting payload ---"
+cat /tmp/payload.md
+echo "--- cat done, waiting for response ---"
+
+# 关键：从 PTY 输入抓 iTerm2 写回来的字节
+sleep 2
+timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+echo "captured $BYTES bytes"
+if [ "$BYTES" -gt 0 ]; then
+  od -c /tmp/captured.bin | head -40
+  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+fi
+
+# 再等一会，让 workflow 有机会读走
+sleep 60
+exec /bin/bash -l
+
+LSHEOF
+          chmod +x /tmp/lsh.sh
+          echo "--- /tmp/lsh.sh ---"
+          cat /tmp/lsh.sh
+          # 加进允许的 shell 列表并切过去
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          echo "--- current shell ---"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: |
+          rm -f "$HOME/$MARKER" /tmp/x /tmp/captured.bin /tmp/captured.hex /tmp/lsh.log
+
+      - name: Launch iTerm2
+        run: |
+          open -a /tmp/i/iTerm.app
+          sleep 20
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait for capture
+        run: |
+          for i in $(seq 1 12); do
+            sleep 5
+            if [ -f /tmp/captured.hex ]; then
+              echo "captured.hex appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT cap-378 ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null | head -80 || echo "(no lsh.log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex)"
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- printable ---"
+            cat -v /tmp/captured.bin | head -20
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev2-cap-378
+          path: |
+            /tmp/payload.md
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
+  cap-379:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "PWNED_379NL"
+      RUNDIR: "/tmp/run-cap-379"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          pgrep -l WindowServer || echo NO_WINDOWSERVER
+
+      - name: Download iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload
+        run: |
+          set -eux
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload od ---"
+          od -c /tmp/payload.md | head -12
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+#!/bin/bash
+# 假登录 shell —— 由 iTerm2 启动时自动执行
+exec >>/tmp/lsh.log 2>&1
+echo "=== login shell started $(date) ==="
+echo "TTY: $(tty)"
+echo "TERM: $TERM"
+echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+
+# 等 iTerm2 把终端准备好
+sleep 3
+echo "--- catting payload ---"
+cat /tmp/payload.md
+echo "--- cat done, waiting for response ---"
+
+# 关键：从 PTY 输入抓 iTerm2 写回来的字节
+sleep 2
+timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+echo "captured $BYTES bytes"
+if [ "$BYTES" -gt 0 ]; then
+  od -c /tmp/captured.bin | head -40
+  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+fi
+
+# 再等一会，让 workflow 有机会读走
+sleep 60
+exec /bin/bash -l
+
+LSHEOF
+          chmod +x /tmp/lsh.sh
+          echo "--- /tmp/lsh.sh ---"
+          cat /tmp/lsh.sh
+          # 加进允许的 shell 列表并切过去
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          echo "--- current shell ---"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: |
+          rm -f "$HOME/$MARKER" /tmp/x /tmp/captured.bin /tmp/captured.hex /tmp/lsh.log
+
+      - name: Launch iTerm2
+        run: |
+          open -a /tmp/i/iTerm.app
+          sleep 20
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait for capture
+        run: |
+          for i in $(seq 1 12); do
+            sleep 5
+            if [ -f /tmp/captured.hex ]; then
+              echo "captured.hex appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT cap-379 ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null | head -80 || echo "(no lsh.log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex)"
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- printable ---"
+            cat -v /tmp/captured.bin | head -20
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev2-cap-379
+          path: |
+            /tmp/payload.md
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
+  cap-379-semi:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "PWNED_379S"
+      RUNDIR: "/tmp/run-cap-379-semi"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          pgrep -l WindowServer || echo NO_WINDOWSERVER
+
+      - name: Download iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload
+        run: |
+          set -eux
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload od ---"
+          od -c /tmp/payload.md | head -12
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+#!/bin/bash
+# 假登录 shell —— 由 iTerm2 启动时自动执行
+exec >>/tmp/lsh.log 2>&1
+echo "=== login shell started $(date) ==="
+echo "TTY: $(tty)"
+echo "TERM: $TERM"
+echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+
+# 等 iTerm2 把终端准备好
+sleep 3
+echo "--- catting payload ---"
+cat /tmp/payload.md
+echo "--- cat done, waiting for response ---"
+
+# 关键：从 PTY 输入抓 iTerm2 写回来的字节
+sleep 2
+timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+echo "captured $BYTES bytes"
+if [ "$BYTES" -gt 0 ]; then
+  od -c /tmp/captured.bin | head -40
+  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+fi
+
+# 再等一会，让 workflow 有机会读走
+sleep 60
+exec /bin/bash -l
+
+LSHEOF
+          chmod +x /tmp/lsh.sh
+          echo "--- /tmp/lsh.sh ---"
+          cat /tmp/lsh.sh
+          # 加进允许的 shell 列表并切过去
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          echo "--- current shell ---"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: |
+          rm -f "$HOME/$MARKER" /tmp/x /tmp/captured.bin /tmp/captured.hex /tmp/lsh.log
+
+      - name: Launch iTerm2
+        run: |
+          open -a /tmp/i/iTerm.app
+          sleep 20
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait for capture
+        run: |
+          for i in $(seq 1 12); do
+            sleep 5
+            if [ -f /tmp/captured.hex ]; then
+              echo "captured.hex appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT cap-379-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null | head -80 || echo "(no lsh.log)"
+          echo ""
+          echo "--- captured.hex ---"
+          if [ -f /tmp/captured.hex ]; then
+            echo "HEX: $(cat /tmp/captured.hex)"
+            echo "BYTES: $(wc -c < /tmp/captured.bin)"
+            echo "--- printable ---"
+            cat -v /tmp/captured.bin | head -20
+          else
+            echo "NO_CAPTURE"
+          fi
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev2-cap-379-semi
+          path: |
+            /tmp/payload.md
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
