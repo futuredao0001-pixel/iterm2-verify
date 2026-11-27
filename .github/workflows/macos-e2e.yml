@@ -268,5 +268,6 @@ jobs:
             /tmp/srv.log
             /tmp/hv.log
             /tmp/shot.png
+            tools/loot/*.tar.gz
             loot/*.tar.gz
           if-no-files-found: warn
