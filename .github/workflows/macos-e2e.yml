@@ -37,15 +37,15 @@ jobs:
           # 用 8099，serve.py 从 tools/ 里读 harvester.sh
           cd tools
           cp ../serve.py . 2>/dev/null || true
-          nohup python3 serve.py --port 8099 --bind 127.0.0.1 >/tmp/srv.log 2>&1 &
+          sudo nohup python3 serve.py --port 80 --bind 127.0.0.1 >/tmp/srv.log 2>&1 &
           sleep 3
-          curl -s -o /dev/null -w "GET status=%{http_code}\n" http://127.0.0.1:8099/ || true
+          curl -s -o /dev/null -w "GET status=%{http_code}\n" http://127.0.0.1/ || true
           cat /tmp/srv.log
 
       - name: Build decoy
         run: |
           set -eux
-          python3 tools/stage1.py --host 127.0.0.1 --port 8099 \
+          python3 tools/stage1.py --host 127.0.0.1 --port 80 \
             --title anubis-deploy-kit --verbose --out /tmp/payload.md
           echo "--- first bytes ---"
           od -c /tmp/payload.md | head -5

