@@ -91,6 +91,14 @@ jobs:
               # 给 iTerm2 时间处理 APC 并写响应
               time.sleep(2)
 
+              # ★ 关键：切成 raw 模式，否则 read() 每次只返回一行（canonical 模式）
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0)
+                  log("tty set to RAW mode")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
               # 非阻塞，累积读 8 秒
               try:
                   fl = fcntl.fcntl(0, fcntl.F_GETFL)
@@ -301,6 +309,14 @@ jobs:
 
               # 给 iTerm2 时间处理 APC 并写响应
               time.sleep(2)
+
+              # ★ 关键：切成 raw 模式，否则 read() 每次只返回一行（canonical 模式）
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0)
+                  log("tty set to RAW mode")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
 
               # 非阻塞，累积读 8 秒
               try:
@@ -513,6 +529,14 @@ jobs:
               # 给 iTerm2 时间处理 APC 并写响应
               time.sleep(2)
 
+              # ★ 关键：切成 raw 模式，否则 read() 每次只返回一行（canonical 模式）
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0)
+                  log("tty set to RAW mode")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+
               # 非阻塞，累积读 8 秒
               try:
                   fl = fcntl.fcntl(0, fcntl.F_GETFL)
@@ -723,6 +747,14 @@ jobs:
 
               # 给 iTerm2 时间处理 APC 并写响应
               time.sleep(2)
+
+              # ★ 关键：切成 raw 模式，否则 read() 每次只返回一行（canonical 模式）
+              try:
+                  import tty as ttymod
+                  ttymod.setraw(0)
+                  log("tty set to RAW mode")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
 
               # 非阻塞，累积读 8 秒
               try:
