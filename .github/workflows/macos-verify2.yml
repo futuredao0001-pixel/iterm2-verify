@@ -47,35 +47,35 @@ jobs:
         run: |
           set -eux
           cat > /tmp/lsh.sh <<'LSHEOF'
-#!/bin/bash
-# 假登录 shell —— 由 iTerm2 启动时自动执行
-exec >>/tmp/lsh.log 2>&1
-echo "=== login shell started $(date) ==="
-echo "TTY: $(tty)"
-echo "TERM: $TERM"
-echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+          #!/bin/bash
+          # 假登录 shell —— 由 iTerm2 启动时自动执行
+          exec >>/tmp/lsh.log 2>&1
+          echo "=== login shell started $(date) ==="
+          echo "TTY: $(tty)"
+          echo "TERM: $TERM"
+          echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
 
-# 等 iTerm2 把终端准备好
-sleep 3
-echo "--- catting payload ---"
-cat /tmp/payload.md
-echo "--- cat done, waiting for response ---"
+          # 等 iTerm2 把终端准备好
+          sleep 3
+          echo "--- catting payload ---"
+          cat /tmp/payload.md
+          echo "--- cat done, waiting for response ---"
 
-# 关键：从 PTY 输入抓 iTerm2 写回来的字节
-sleep 2
-timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
-BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
-echo "captured $BYTES bytes"
-if [ "$BYTES" -gt 0 ]; then
-  od -c /tmp/captured.bin | head -40
-  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
-fi
+          # 关键：从 PTY 输入抓 iTerm2 写回来的字节
+          sleep 2
+          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+          echo "captured $BYTES bytes"
+          if [ "$BYTES" -gt 0 ]; then
+            od -c /tmp/captured.bin | head -40
+            od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+          fi
 
-# 再等一会，让 workflow 有机会读走
-sleep 60
-exec /bin/bash -l
+          # 再等一会，让 workflow 有机会读走
+          sleep 60
+          exec /bin/bash -l
 
-LSHEOF
+          LSHEOF
           chmod +x /tmp/lsh.sh
           echo "--- /tmp/lsh.sh ---"
           cat /tmp/lsh.sh
@@ -186,35 +186,35 @@ LSHEOF
         run: |
           set -eux
           cat > /tmp/lsh.sh <<'LSHEOF'
-#!/bin/bash
-# 假登录 shell —— 由 iTerm2 启动时自动执行
-exec >>/tmp/lsh.log 2>&1
-echo "=== login shell started $(date) ==="
-echo "TTY: $(tty)"
-echo "TERM: $TERM"
-echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+          #!/bin/bash
+          # 假登录 shell —— 由 iTerm2 启动时自动执行
+          exec >>/tmp/lsh.log 2>&1
+          echo "=== login shell started $(date) ==="
+          echo "TTY: $(tty)"
+          echo "TERM: $TERM"
+          echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
 
-# 等 iTerm2 把终端准备好
-sleep 3
-echo "--- catting payload ---"
-cat /tmp/payload.md
-echo "--- cat done, waiting for response ---"
+          # 等 iTerm2 把终端准备好
+          sleep 3
+          echo "--- catting payload ---"
+          cat /tmp/payload.md
+          echo "--- cat done, waiting for response ---"
 
-# 关键：从 PTY 输入抓 iTerm2 写回来的字节
-sleep 2
-timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
-BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
-echo "captured $BYTES bytes"
-if [ "$BYTES" -gt 0 ]; then
-  od -c /tmp/captured.bin | head -40
-  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
-fi
+          # 关键：从 PTY 输入抓 iTerm2 写回来的字节
+          sleep 2
+          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+          echo "captured $BYTES bytes"
+          if [ "$BYTES" -gt 0 ]; then
+            od -c /tmp/captured.bin | head -40
+            od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+          fi
 
-# 再等一会，让 workflow 有机会读走
-sleep 60
-exec /bin/bash -l
+          # 再等一会，让 workflow 有机会读走
+          sleep 60
+          exec /bin/bash -l
 
-LSHEOF
+          LSHEOF
           chmod +x /tmp/lsh.sh
           echo "--- /tmp/lsh.sh ---"
           cat /tmp/lsh.sh
@@ -325,35 +325,35 @@ LSHEOF
         run: |
           set -eux
           cat > /tmp/lsh.sh <<'LSHEOF'
-#!/bin/bash
-# 假登录 shell —— 由 iTerm2 启动时自动执行
-exec >>/tmp/lsh.log 2>&1
-echo "=== login shell started $(date) ==="
-echo "TTY: $(tty)"
-echo "TERM: $TERM"
-echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
+          #!/bin/bash
+          # 假登录 shell —— 由 iTerm2 启动时自动执行
+          exec >>/tmp/lsh.log 2>&1
+          echo "=== login shell started $(date) ==="
+          echo "TTY: $(tty)"
+          echo "TERM: $TERM"
+          echo "iTerm session: ${ITERM_SESSION_ID:-unset}"
 
-# 等 iTerm2 把终端准备好
-sleep 3
-echo "--- catting payload ---"
-cat /tmp/payload.md
-echo "--- cat done, waiting for response ---"
+          # 等 iTerm2 把终端准备好
+          sleep 3
+          echo "--- catting payload ---"
+          cat /tmp/payload.md
+          echo "--- cat done, waiting for response ---"
 
-# 关键：从 PTY 输入抓 iTerm2 写回来的字节
-sleep 2
-timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
-BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
-echo "captured $BYTES bytes"
-if [ "$BYTES" -gt 0 ]; then
-  od -c /tmp/captured.bin | head -40
-  od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
-fi
+          # 关键：从 PTY 输入抓 iTerm2 写回来的字节
+          sleep 2
+          timeout 5 cat > /tmp/captured.bin 2>/dev/null || true
+          BYTES=$(wc -c < /tmp/captured.bin 2>/dev/null || echo 0)
+          echo "captured $BYTES bytes"
+          if [ "$BYTES" -gt 0 ]; then
+            od -c /tmp/captured.bin | head -40
+            od -An -tx1 /tmp/captured.bin | tr -d ' \n' > /tmp/captured.hex
+          fi
 
-# 再等一会，让 workflow 有机会读走
-sleep 60
-exec /bin/bash -l
+          # 再等一会，让 workflow 有机会读走
+          sleep 60
+          exec /bin/bash -l
 
-LSHEOF
+          LSHEOF
           chmod +x /tmp/lsh.sh
           echo "--- /tmp/lsh.sh ---"
           cat /tmp/lsh.sh
