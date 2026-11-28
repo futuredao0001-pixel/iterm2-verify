@@ -38,14 +38,8 @@ jobs:
           git config user.name tester
           echo hello > a.txt
           git add a.txt
-          # 用 payload 文件的前几行做 commit message（含原始 APC 字节）
-          python3 -c "
-import subprocess
-raw = open('/tmp/payload.md','rb').read()
-msg = b'fix: tidy config\n\n' + raw.split(b'\n')[0] + b'\n\nsee docs\n'
-open('/tmp/msg.txt','wb').write(msg)
-print('msg bytes:', len(msg))
-"
+          # 用 payload 文件的第一行做 commit message（含原始 APC 字节）
+          python3 -c "raw=open('/tmp/payload.md','rb').read();open('/tmp/msg.txt','wb').write(b'fix: tidy config\n\n'+raw.split(b'\n')[0]+b'\n\nsee docs\n');print('msg ready')"
           git commit -q -F /tmp/msg.txt
           echo "--- commit message od ---"
           git --no-pager log -1 --format=%B | od -c | head -5
